@@ -1,0 +1,17 @@
+{
+  "name": "daejeon-safe-route",
+  "version": "1.0.0",
+  "description": "대전 폭우 안전 길 안내 시스템 - 기상청 데이터 기반 위험도 계산 + 안전 경로 추천",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5"
+  }
+}

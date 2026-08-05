@@ -1,0 +1,465 @@
+// 대전시청 부근을 기본 중심으로 지도 초기화
+const DAEJEON_CENTER = { lat: 36.3504, lng: 127.3845 };
+
+const map = new kakao.maps.Map(document.getElementById('map'), {
+  center: new kakao.maps.LatLng(DAEJEON_CENTER.lat, DAEJEON_CENTER.lng),
+  level: 6,
+});
+
+const geocoder = new kakao.maps.services.Geocoder();
+const places = new kakao.maps.services.Places();
+
+let routeOverlays = []; // 현재 지도에 그려진 경로선/마커를 추적해서 다음 검색 때 지움
+let riskZoneOverlays = [];
+let activeInfoOverlay = null; // 위험구간 클릭 시 뜨는 CustomOverlay (한 번에 하나만 표시)
+
+function clearOverlays(list) {
+  list.forEach((o) => o.setMap(null));
+  list.length = 0;
+}
+
+function riskColor(risk) {
+  if (risk < 0.35) return '#2a9d8f'; // 안전
+  if (risk < 0.65) return '#f4a261'; // 주의
+  return '#e63946'; // 위험
+}
+
+// 위험구간 원을 클릭했을 때 정보를 보여주는 말풍선(CustomOverlay)
+function attachInfoOverlay(circle, position, html) {
+  kakao.maps.event.addListener(circle, 'click', () => {
+    if (activeInfoOverlay) activeInfoOverlay.setMap(null);
+
+    const content = document.createElement('div');
+    content.innerHTML = html;
+    content.style.cssText = `
+      background: white; border: 1px solid #ccc; border-radius: 6px;
+      padding: 8px 10px; font-size: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      white-space: nowrap;
+    `;
+    // 닫기: 말풍선 자체를 다시 클릭하면 닫힘
+    content.addEventListener('click', () => {
+      activeInfoOverlay.setMap(null);
+      activeInfoOverlay = null;
+    });
+
+    activeInfoOverlay = new kakao.maps.CustomOverlay({
+      map,
+      position,
+      content,
+      yAnchor: 1.3,
+      clickable: true,
+    });
+  });
+}
+
+// ---------- 위험구간(하천 관측점 / 침수 이력) 지도에 표시 - 실제 도로 경로를 따라 색칠 ----------
+async function loadRiskZones() {
+  try {
+    const res = await fetch('/api/risk-zones');
+    const data = await res.json();
+
+    clearOverlays(riskZoneOverlays);
+
+    data.riverPoints.forEach((p) => {
+      const path = (p.roadPath && p.roadPath.length > 1) ? p.roadPath : [p, p];
+      const polyline = new kakao.maps.Polyline({
+        path: path.map((pt) => new kakao.maps.LatLng(pt.lat, pt.lng)),
+        strokeWeight: 6,
+        strokeColor: riskColor(p.level),
+        strokeOpacity: 0.55,
+        strokeStyle: 'solid',
+      });
+      polyline.setMap(map);
+      riskZoneOverlays.push(polyline);
+
+      const mid = path[Math.floor(path.length / 2)];
+      attachInfoOverlay(polyline, new kakao.maps.LatLng(mid.lat, mid.lng),
+        `<b>${p.name}</b><br/>하천 수위 위험도: ${(p.level * 100).toFixed(0)}%<br/><span style="color:#999">(클릭하면 닫힘)</span>`);
+    });
+
+    data.historicalFloodPoints.forEach((p) => {
+      const path = (p.roadPath && p.roadPath.length > 1) ? p.roadPath : [p, p];
+      const polyline = new kakao.maps.Polyline({
+        path: path.map((pt) => new kakao.maps.LatLng(pt.lat, pt.lng)),
+        strokeWeight: 5,
+        strokeColor: '#e63946',
+        strokeOpacity: 0.4,
+        strokeStyle: 'shortdash',
+      });
+      polyline.setMap(map);
+      riskZoneOverlays.push(polyline);
+
+      const mid = path[Math.floor(path.length / 2)];
+      attachInfoOverlay(polyline, new kakao.maps.LatLng(mid.lat, mid.lng),
+        `<b>과거 침수 이력 도로</b><br/>가중치: ${(p.weight * 100).toFixed(0)}%<br/><span style="color:#999">(클릭하면 닫힘)</span>`);
+    });
+  } catch (e) {
+    console.warn('위험구간 로드 실패', e);
+  }
+}
+loadRiskZones();
+
+// ---------- 주소 -> 좌표 변환 ----------
+function geocodeAddress(query) {
+  return new Promise((resolve, reject) => {
+    // 먼저 키워드 장소 검색(건물명, 지명 등)을 시도하고, 실패하면 주소 검색으로 재시도
+    places.keywordSearch(query, (data, status) => {
+      if (status === kakao.maps.services.Status.OK && data.length > 0) {
+        resolve({ lat: parseFloat(data[0].y), lng: parseFloat(data[0].x), name: data[0].place_name });
+        return;
+      }
+      geocoder.addressSearch(query, (result, addrStatus) => {
+        if (addrStatus === kakao.maps.services.Status.OK && result.length > 0) {
+          resolve({ lat: parseFloat(result[0].y), lng: parseFloat(result[0].x), name: query });
+        } else {
+          reject(new Error(`"${query}" 위치를 찾을 수 없습니다.`));
+        }
+      });
+    });
+  });
+}
+
+// ---------- 출발지/도착지 자동완성(연관검색어) ----------
+const selectedLocations = { origin: null, destination: null }; // 드롭다운에서 클릭 선택하면 좌표를 바로 저장해 재검색 시 지오코딩을 건너뜀
+
+function debounce(fn, delay) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
+}
+
+function setupAutocomplete(inputEl, listEl, storeKey) {
+  function closeSuggestions() {
+    listEl.classList.remove('open');
+    listEl.innerHTML = '';
+  }
+
+  function renderSuggestions(items) {
+    listEl.innerHTML = items.map((item, i) => `
+      <div class="suggestion-item" data-index="${i}">
+        <div class="s-name">${item.place_name}</div>
+        <div class="s-addr">${item.road_address_name || item.address_name || ''}</div>
+      </div>
+    `).join('');
+    listEl.classList.add('open');
+
+    listEl.querySelectorAll('.suggestion-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        const item = items[Number(el.dataset.index)];
+        inputEl.value = item.place_name;
+        selectedLocations[storeKey] = { lat: parseFloat(item.y), lng: parseFloat(item.x), name: item.place_name };
+        closeSuggestions();
+      });
+    });
+  }
+
+  const search = debounce((query) => {
+    const trimmed = query ? query.trim() : '';
+    if (trimmed.length < 2) {
+      closeSuggestions();
+      return;
+    }
+    // 넉넉하게 받아온 뒤, 주소가 아니라 "장소 이름"에 검색어가 포함된 결과를 우선으로 재정렬
+    places.keywordSearch(trimmed, (data, status) => {
+      if (status !== kakao.maps.services.Status.OK || data.length === 0) {
+        closeSuggestions();
+        return;
+      }
+      const sorted = [...data].sort((a, b) => {
+        const aNameMatch = a.place_name.includes(trimmed) ? 0 : 1;
+        const bNameMatch = b.place_name.includes(trimmed) ? 0 : 1;
+        if (aNameMatch !== bNameMatch) return aNameMatch - bNameMatch;
+        return 0; // 이름 매칭 여부가 같으면 카카오 기본 정확도 순서 유지
+      });
+      renderSuggestions(sorted.slice(0, 6));
+    }, { size: 10 });
+  }, 250);
+
+  inputEl.addEventListener('input', () => {
+    selectedLocations[storeKey] = null; // 직접 타이핑하면 이전 선택은 무효화
+    search(inputEl.value);
+  });
+
+  // 입력창/드롭다운 바깥을 클릭하면 닫기
+  document.addEventListener('click', (e) => {
+    if (!inputEl.contains(e.target) && !listEl.contains(e.target)) {
+      closeSuggestions();
+    }
+  });
+}
+
+setupAutocomplete(
+  document.getElementById('originInput'),
+  document.getElementById('originSuggestions'),
+  'origin'
+);
+setupAutocomplete(
+  document.getElementById('destInput'),
+  document.getElementById('destSuggestions'),
+  'destination'
+);
+
+// ---------- 이동수단 선택 ----------
+let selectedMode = 'car';
+document.querySelectorAll('.mode-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.mode-btn').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedMode = btn.dataset.mode;
+  });
+});
+
+// ---------- 경로 검색 (재탐색에서도 재사용하는 공통 함수) ----------
+const searchBtn = document.getElementById('searchBtn');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+
+let activeRouteContext = null; // { destination, mode } - 실시간 추적/자동 재탐색이 이걸 기준으로 계속 갱신
+let currentOrigin = null; // 마지막으로 확인된 출발 위치 (실시간 추적 중엔 GPS로 계속 갱신됨)
+let lastRoutePath = []; // 현재 지도에 그려진 추천 경로의 전체 좌표 (경로 이탈 판정에 사용)
+let isRefreshing = false; // 중복 호출 방지
+
+async function fetchAndRenderRoute(origin, destination, { silent = false, fitBounds = false } = {}) {
+  if (isRefreshing) return null;
+  isRefreshing = true;
+  if (!silent) {
+    searchBtn.disabled = true;
+    statusEl.textContent = '기상 데이터 및 안전 경로 계산 중...';
+  }
+
+  try {
+    const params = new URLSearchParams({
+      originLat: origin.lat,
+      originLng: origin.lng,
+      destLat: destination.lat,
+      destLng: destination.lng,
+      mode: selectedMode,
+    });
+    const res = await fetch(`/api/route?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '경로 조회 실패');
+
+    clearOverlays(routeOverlays);
+    lastRoutePath = data.recommended.path;
+    renderRoute(data.recommended, true, origin, destination);
+    data.alternatives.forEach((alt) => renderRoute(alt, false));
+    renderResultCards(data.recommended, data.alternatives);
+
+    const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const trackingSuffix = trackingActive ? ' · 실시간 추적 중' : '';
+    statusEl.textContent = `현재 강수 위험도: ${(data.rainfallRisk * 100).toFixed(0)}% · 마지막 갱신 ${timeStr}${trackingSuffix}`;
+
+    if (fitBounds) {
+      const bounds = new kakao.maps.LatLngBounds();
+      data.recommended.path.forEach((p) => bounds.extend(new kakao.maps.LatLng(p.lat, p.lng)));
+      map.setBounds(bounds);
+    }
+
+    activeRouteContext = { destination, mode: selectedMode };
+    return data;
+  } catch (err) {
+    console.error(err);
+    if (!silent) statusEl.textContent = `오류: ${err.message}`;
+    return null;
+  } finally {
+    isRefreshing = false;
+    if (!silent) searchBtn.disabled = false;
+  }
+}
+
+searchBtn.addEventListener('click', async () => {
+  const originQuery = document.getElementById('originInput').value.trim();
+  const destQuery = document.getElementById('destInput').value.trim();
+
+  if (!originQuery || !destQuery) {
+    statusEl.textContent = '출발지와 도착지를 모두 입력하세요.';
+    return;
+  }
+
+  if (activeInfoOverlay) { activeInfoOverlay.setMap(null); activeInfoOverlay = null; }
+  statusEl.textContent = '위치 확인 중...';
+  resultsEl.innerHTML = '';
+
+  try {
+    const [origin, destination] = await Promise.all([
+      selectedLocations.origin || geocodeAddress(originQuery),
+      selectedLocations.destination || geocodeAddress(destQuery),
+    ]);
+    currentOrigin = origin;
+    await fetchAndRenderRoute(origin, destination, { silent: false, fitBounds: true });
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = `오류: ${err.message}`;
+  }
+});
+
+// ---------- 실시간 추적 & 자동 재탐색 ----------
+// 일반 내비게이션보다 훨씬 자주(15초) 재탐색: 폭우 상황은 하천 수위·통제구간이 빠르게 바뀌기 때문
+let trackingActive = false;
+let liveWatchId = null;
+let autoRefreshTimer = null;
+let liveMarker = null;
+const AUTO_REFRESH_MS = 15000; // 15초마다 자동 재탐색
+const DEVIATION_THRESHOLD_M = 60; // 경로에서 이 거리(m) 이상 벗어나면 즉시 재탐색
+
+function haversineMeters(a, b) {
+  const R = 6371000;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// 내 위치가 현재 경로에서 얼마나 떨어져 있는지 (경로를 이루는 점들과의 최단 거리로 근사)
+function minDistanceToPath(point, path) {
+  if (!path || path.length === 0) return Infinity;
+  let min = Infinity;
+  for (const p of path) {
+    const d = haversineMeters(point, p);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+function updateLiveMarker(position) {
+  const pos = new kakao.maps.LatLng(position.lat, position.lng);
+  if (!liveMarker) {
+    liveMarker = new kakao.maps.Circle({
+      center: pos,
+      radius: 15,
+      strokeWeight: 2,
+      strokeColor: '#1e88e5',
+      strokeOpacity: 0.9,
+      fillColor: '#1e88e5',
+      fillOpacity: 0.8,
+    });
+    liveMarker.setMap(map);
+  } else {
+    liveMarker.setPosition(pos);
+  }
+}
+
+async function handlePositionUpdate(position) {
+  const coords = { lat: position.coords.latitude, lng: position.coords.longitude };
+  currentOrigin = coords;
+  updateLiveMarker(coords);
+
+  if (!activeRouteContext) return; // 아직 경로를 한 번도 안 찾았으면 추적만 하고 재탐색은 하지 않음
+
+  const deviation = minDistanceToPath(coords, lastRoutePath);
+  if (deviation > DEVIATION_THRESHOLD_M) {
+    trackingStatusEl.textContent = `⚠️ 경로 이탈 감지(약 ${Math.round(deviation)}m) — 재탐색 중...`;
+    await fetchAndRenderRoute(coords, activeRouteContext.destination, { silent: true });
+    trackingStatusEl.textContent = `실시간 추적 중 · ${AUTO_REFRESH_MS / 1000}초마다 자동 재탐색`;
+  }
+}
+
+const trackingBtn = document.getElementById('trackingBtn');
+const trackingStatusEl = document.getElementById('trackingStatus');
+
+function startTracking() {
+  if (!activeRouteContext) {
+    statusEl.textContent = '먼저 "안전 경로 찾기"로 경로를 검색한 뒤 실시간 추적을 켜주세요.';
+    return;
+  }
+  if (!navigator.geolocation) {
+    statusEl.textContent = '이 브라우저는 위치 추적(GPS)을 지원하지 않습니다.';
+    return;
+  }
+
+  trackingActive = true;
+  trackingBtn.textContent = '⏹ 실시간 추적 중지';
+  trackingBtn.classList.add('active');
+  trackingStatusEl.textContent = `실시간 추적 시작 · ${AUTO_REFRESH_MS / 1000}초마다 자동 재탐색 (출발지는 이제 내 실제 위치로 갱신됩니다)`;
+
+  liveWatchId = navigator.geolocation.watchPosition(
+    handlePositionUpdate,
+    (err) => { trackingStatusEl.textContent = `위치 확인 실패: ${err.message}`; },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+  );
+
+  autoRefreshTimer = setInterval(async () => {
+    if (!activeRouteContext || !currentOrigin) return;
+    trackingStatusEl.textContent = '자동 재탐색 중...';
+    await fetchAndRenderRoute(currentOrigin, activeRouteContext.destination, { silent: true });
+    trackingStatusEl.textContent = `실시간 추적 중 · ${AUTO_REFRESH_MS / 1000}초마다 자동 재탐색`;
+  }, AUTO_REFRESH_MS);
+}
+
+function stopTracking() {
+  trackingActive = false;
+  trackingBtn.textContent = '🛰 실시간 추적 시작';
+  trackingBtn.classList.remove('active');
+  trackingStatusEl.textContent = '';
+
+  if (liveWatchId !== null) {
+    navigator.geolocation.clearWatch(liveWatchId);
+    liveWatchId = null;
+  }
+  if (autoRefreshTimer !== null) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  if (liveMarker) {
+    liveMarker.setMap(null);
+    liveMarker = null;
+  }
+}
+
+trackingBtn.addEventListener('click', () => {
+  if (trackingActive) stopTracking();
+  else startTracking();
+});
+
+// 경로를 통째로 한 색이 아니라, 구간(sampledPoints 인접 구간)마다 그 구간의 위험도 색으로 나눠 그린다.
+function renderRoute(route, isRecommended, origin, destination) {
+  const points = route.sampledPoints && route.sampledPoints.length > 1
+    ? route.sampledPoints
+    : route.path.map((p) => ({ ...p, risk: route.riskScore })); // 안전장치: 샘플이 없으면 평균 위험도로 단색 처리
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const segRisk = (points[i].risk + points[i + 1].risk) / 2;
+    const segment = new kakao.maps.Polyline({
+      path: [
+        new kakao.maps.LatLng(points[i].lat, points[i].lng),
+        new kakao.maps.LatLng(points[i + 1].lat, points[i + 1].lng),
+      ],
+      strokeWeight: isRecommended ? 6 : 3,
+      strokeColor: riskColor(segRisk),
+      strokeOpacity: isRecommended ? 0.9 : 0.5,
+      strokeStyle: isRecommended ? 'solid' : 'shortdash',
+    });
+    segment.setMap(map);
+    routeOverlays.push(segment);
+  }
+
+  if (isRecommended && origin && destination) {
+    const startMarker = new kakao.maps.Marker({ position: new kakao.maps.LatLng(origin.lat, origin.lng) });
+    const endMarker = new kakao.maps.Marker({ position: new kakao.maps.LatLng(destination.lat, destination.lng) });
+    startMarker.setMap(map);
+    endMarker.setMap(map);
+    routeOverlays.push(startMarker, endMarker);
+  }
+}
+
+function renderResultCards(recommended, alternatives) {
+  const all = [{ ...recommended, label: '추천 (가장 안전)', recommended: true },
+    ...alternatives.map((a, i) => ({ ...a, label: `대안 경로 ${i + 1}`, recommended: false }))];
+
+  resultsEl.innerHTML = all.map((r) => `
+    <div class="result-card ${r.recommended ? 'recommended' : ''}">
+      <h3>${r.label} ${r.blocked ? '⚠️ 통제구간 포함' : ''}</h3>
+      <div class="meta">
+        거리 ${(r.distance / 1000).toFixed(1)}km · 예상 ${Math.round(r.duration / 60)}분
+      </div>
+      <div class="meta">위험도 ${(r.riskScore * 100).toFixed(0)}% (최고 ${(r.maxRisk * 100).toFixed(0)}%)</div>
+      <div class="risk-bar">
+        <div class="risk-bar-fill" style="width:${r.riskScore * 100}%; background:${riskColor(r.riskScore)}"></div>
+      </div>
+    </div>
+  `).join('');
+}

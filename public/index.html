@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>대전 안전 길 안내 시스템</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Pretendard", "Malgun Gothic", sans-serif; background: #f4f6f8; }
+
+  header {
+    background: #1e3a5f;
+    color: white;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .badge {
+    font-size: 12px;
+    background: #ffb703;
+    color: #1e3a5f;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: bold;
+  }
+
+  #layout {
+    display: flex;
+    height: calc(100vh - 54px);
+  }
+
+  #sidebar {
+    width: 340px;
+    padding: 16px;
+    background: white;
+    box-shadow: 2px 0 6px rgba(0,0,0,0.06);
+    overflow-y: auto;
+    z-index: 5;
+  }
+
+  #map { flex: 1; }
+
+  .mode-selector {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 14px;
+  }
+  .mode-btn {
+    flex: 1;
+    padding: 8px 4px;
+    border: 1px solid #ddd;
+    background: white;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    color: #555;
+    text-align: center;
+  }
+  .mode-btn:hover { background: #f4f6f8; }
+  .mode-btn.active {
+    background: #1e3a5f;
+    border-color: #1e3a5f;
+    color: white;
+    font-weight: bold;
+  }
+
+  .field { margin-bottom: 12px; position: relative; }
+  .field label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
+  .field input {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+
+  .suggestions {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid #ddd;
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 20;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+  }
+  .suggestions.open { display: block; }
+  .suggestion-item {
+    padding: 8px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .suggestion-item:last-child { border-bottom: none; }
+  .suggestion-item:hover { background: #f4f6f8; }
+  .suggestion-item .s-name { font-size: 13px; color: #222; }
+  .suggestion-item .s-addr { font-size: 11px; color: #999; margin-top: 2px; }
+
+  #searchBtn {
+    width: 100%;
+    padding: 10px;
+    background: #1e3a5f;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 15px;
+    font-weight: bold;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  #searchBtn:hover { background: #16304d; }
+  #searchBtn:disabled { background: #999; cursor: not-allowed; }
+
+  #trackingBtn {
+    width: 100%;
+    padding: 9px;
+    background: white;
+    color: #1e3a5f;
+    border: 1px solid #1e3a5f;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: bold;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  #trackingBtn:hover { background: #f4f6f8; }
+  #trackingBtn.active { background: #1e88e5; border-color: #1e88e5; color: white; }
+  #trackingStatus { font-size: 12px; color: #1e88e5; margin-top: 6px; min-height: 16px; }
+
+  #status { font-size: 13px; color: #888; margin-top: 8px; min-height: 18px; }
+
+  .result-card {
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #e2e2e2;
+  }
+  .result-card.recommended { border-color: #2a9d8f; background: #f0fbf9; }
+  .result-card h3 { margin: 0 0 6px; font-size: 14px; }
+  .result-card .meta { font-size: 12px; color: #666; }
+  .risk-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: #eee;
+    margin-top: 6px;
+    overflow: hidden;
+  }
+  .risk-bar-fill { height: 100%; }
+
+  .legend {
+    margin-top: 20px;
+    font-size: 12px;
+    color: #555;
+    border-top: 1px solid #eee;
+    padding-top: 12px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🌧️ 대전 안전 길 안내 시스템</h1>
+  <span class="badge">해커톤 데모</span>
+</header>
+
+<div id="layout">
+  <div id="sidebar">
+    <div class="mode-selector">
+      <button type="button" class="mode-btn active" data-mode="car">🚗 자동차</button>
+      <button type="button" class="mode-btn" data-mode="walk">🚶 도보</button>
+      <button type="button" class="mode-btn" data-mode="bicycle">🚴 자전거</button>
+      <button type="button" class="mode-btn" data-mode="transit">🚌 대중교통</button>
+    </div>
+    <div class="field">
+      <label for="originInput">출발지</label>
+      <input id="originInput" type="text" placeholder="예: 대전역" autocomplete="off" />
+      <div id="originSuggestions" class="suggestions"></div>
+    </div>
+    <div class="field">
+      <label for="destInput">도착지</label>
+      <input id="destInput" type="text" placeholder="예: 대전시청" autocomplete="off" />
+      <div id="destSuggestions" class="suggestions"></div>
+    </div>
+    <button id="searchBtn">안전 경로 찾기</button>
+    <button id="trackingBtn" type="button">🛰 실시간 추적 시작</button>
+    <div id="trackingStatus"></div>
+    <div id="status"></div>
+
+    <div id="results"></div>
+
+    <div class="legend">
+      <div class="legend-item"><span class="legend-dot" style="background:#2a9d8f"></span> 안전 (권장 경로)</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#f4a261"></span> 주의</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#e63946"></span> 위험 / 통제 구간</div>
+    </div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<!-- ⚠️ KAKAO_JS_KEY_HERE 를 developers.kakao.com 에서 발급받은 JavaScript 키로 교체하세요 -->
+<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey=797af01dc4dd6d6b74776611e69eb271&libraries=services"></script>
+<script src="app.js"></script>
+</body>
+</html>
