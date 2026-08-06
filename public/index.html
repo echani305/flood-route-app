@@ -77,30 +77,6 @@
     #map { flex: 1; min-height: 35vh; }
   }
 
-  .mode-selector {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 14px;
-  }
-  .mode-btn {
-    flex: 1;
-    padding: 8px 4px;
-    border: 1px solid #ddd;
-    background: white;
-    border-radius: 6px;
-    font-size: 12px;
-    cursor: pointer;
-    color: #555;
-    text-align: center;
-  }
-  .mode-btn:hover { background: #f4f6f8; }
-  .mode-btn.active {
-    background: #1e3a5f;
-    border-color: #1e3a5f;
-    color: white;
-    font-weight: bold;
-  }
-
   .field { margin-bottom: 12px; position: relative; }
   .field label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
   .field input {
@@ -228,7 +204,7 @@
 <body>
 
 <header>
-  <h1>🌧️ 대전 안전 길 안내 시스템</h1>
+  <h1>대전 안전 길 안내 시스템</h1>
   <span class="badge">해커톤 데모</span>
 </header>
 
@@ -236,12 +212,6 @@
   <div id="sidebar">
     <button id="sidebarToggle" type="button">🗺️ 지도 크게 보기 <span id="sidebarToggleIcon">▾</span></button>
     <div id="sidebarContent">
-    <div class="mode-selector">
-      <button type="button" class="mode-btn active" data-mode="car">🚗 자동차</button>
-      <button type="button" class="mode-btn" data-mode="walk">🚶 도보</button>
-      <button type="button" class="mode-btn" data-mode="bicycle">🚴 자전거</button>
-      <button type="button" class="mode-btn" data-mode="transit">🚌 대중교통</button>
-    </div>
     <div class="field">
       <label for="originInput">출발지</label>
       <input id="originInput" type="text" placeholder="예: 대전역" autocomplete="off" />

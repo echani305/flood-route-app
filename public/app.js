@@ -319,15 +319,10 @@ setupAutocomplete(
   'destination'
 );
 
-// ---------- 이동수단 선택 ----------
-let selectedMode = 'car';
-document.querySelectorAll('.mode-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.mode-btn').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    selectedMode = btn.dataset.mode;
-  });
-});
+// ---------- 이동수단 ----------
+// 도보/자전거/대중교통 API는 아직 응답 파싱이 검증 안 돼서, UI에서는 자동차만 사용
+// (백엔드 kakaoRoute.js의 관련 함수들은 남겨뒀으니, 나중에 검증되면 버튼만 다시 추가하면 됨)
+const selectedMode = 'car';
 
 // ---------- 경로 검색 (재탐색에서도 재사용하는 공통 함수) ----------
 const searchBtn = document.getElementById('searchBtn');
