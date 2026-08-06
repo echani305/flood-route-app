@@ -391,47 +391,57 @@ const resultsEl = document.getElementById('results');
 let activeRouteContext = null; // { destination, mode } - 실시간 추적/자동 재탐색이 이걸 기준으로 계속 갱신
 let currentOrigin = null; // 마지막으로 확인된 출발 위치 (실시간 추적 중엔 GPS로 계속 갱신됨)
 let lastRoutePath = []; // 현재 지도에 그려진 추천 경로의 전체 좌표 (경로 이탈 판정에 사용)
-let lastRouteData = null; // 최근 /api/route 응답 전체 (안전 경로 전환 버튼에서 대안 목록을 다시 쓰기 위함)
+let lastRouteData = null; // 최근 /api/route 응답 그대로 (추천/대안 순서·라벨은 항상 이 기준, 안 바뀜)
+let selectedRouteIndex = 0; // 지금 지도에 그려진/카드에서 초록으로 표시된 경로. 0=추천, 1부터=대안 순서
 let isRefreshing = false; // 중복 호출 방지
 
 // ---------- 위험 구간이 있으면 "더 안전한 경로로 변경" 배너/버튼 ----------
 const RISKY_THRESHOLD = 0.35; // riskColor 기준 이 값부터 주황(주의)
 const safeSwitchBanner = document.getElementById('safeSwitchBanner');
 
+function getAllRoutes() {
+  return lastRouteData ? [lastRouteData.recommended, ...lastRouteData.alternatives] : [];
+}
+
 /**
- * 대안 경로 중 안전한 걸 찾음. 두 단계로 시도:
- * 1) 전 구간이 완전히 초록(주의 미만)인 대안 - 있으면 최우선
- * 2) 그런 게 없으면, 그래도 지금 추천 경로보다는 덜 위험한 대안 중 가장 나은 것
+ * 후보(candidates) 중 안전한 걸 찾음. 두 단계로 시도:
+ * 1) 전 구간이 완전히 초록(주의 미만)인 것 - 있으면 최우선
+ * 2) 그런 게 없으면, 그래도 지금 선택된 경로보다는 덜 위험한 것 중 가장 나은 것
  *    (폭우 극한 모드처럼 출발지 자체가 위험구간 근처면, 완전 초록 대안이 아예 불가능할 수 있어서
  *     이 경우엔 "그나마 더 안전한" 것으로 대체함 - 초록이라고 거짓말은 안 함)
  */
-function findSaferAlternative(recommended, alternatives) {
-  if (!alternatives || alternatives.length === 0) return { route: null, fullyGreen: false };
+function findSaferAlternative(current, candidates) {
+  if (!candidates || candidates.length === 0) return { route: null, fullyGreen: false };
 
-  const fullyGreen = alternatives
+  const fullyGreen = candidates
     .filter((r) => !r.blocked && r.maxRisk < RISKY_THRESHOLD)
     .sort((a, b) => a.maxRisk - b.maxRisk);
   if (fullyGreen.length > 0) return { route: fullyGreen[0], fullyGreen: true };
 
-  const lessRisky = alternatives
-    .filter((r) => !r.blocked && r.maxRisk < recommended.maxRisk)
+  const lessRisky = candidates
+    .filter((r) => !r.blocked && r.maxRisk < current.maxRisk)
     .sort((a, b) => a.maxRisk - b.maxRisk);
   if (lessRisky.length > 0) return { route: lessRisky[0], fullyGreen: false };
 
   return { route: null, fullyGreen: false };
 }
 
-function updateSafeSwitchBanner(data) {
-  const hasRisk = !data.recommended.blocked && data.recommended.maxRisk >= RISKY_THRESHOLD;
+/** 지금 선택되어(지도에 그려져) 있는 경로 기준으로 배너를 다시 계산 */
+function updateSafeSwitchBanner() {
+  const all = getAllRoutes();
+  const current = all[selectedRouteIndex];
+  if (!current) return;
+  const candidates = all.filter((_, i) => i !== selectedRouteIndex);
+
+  const hasRisk = !current.blocked && current.maxRisk >= RISKY_THRESHOLD;
   const { route: safer, fullyGreen } = hasRisk
-    ? findSaferAlternative(data.recommended, data.alternatives)
+    ? findSaferAlternative(current, candidates)
     : { route: null, fullyGreen: false };
 
   // 디버그용: 버튼이 왜 뜨는지/안 뜨는지 콘솔에서 바로 확인 가능하게
   console.log('[안전경로 버튼 판단]', {
-    추천_최고위험도: data.recommended.maxRisk,
-    대안_개수: data.alternatives.length,
-    대안들: data.alternatives.map((a) => ({ maxRisk: a.maxRisk, blocked: a.blocked })),
+    현재선택_최고위험도: current.maxRisk,
+    후보_개수: candidates.length,
     선택된_대안: safer ? { maxRisk: safer.maxRisk, fullyGreen } : null,
   });
 
@@ -441,27 +451,35 @@ function updateSafeSwitchBanner(data) {
     return;
   }
 
-  const label = data.recommended.maxRisk >= 0.65 ? '위험' : '주의';
+  const label = current.maxRisk >= 0.65 ? '위험' : '주의';
   const btnLabel = fullyGreen ? '안전한 길(초록색)로만 변경' : '그나마 더 안전한 경로로 변경';
   safeSwitchBanner.innerHTML = `⚠️ 이 경로는 <b>${label}</b> 구간을 지나요.<button id="switchSafeBtn" type="button">${btnLabel}</button>`;
   safeSwitchBanner.classList.add('show');
-  document.getElementById('switchSafeBtn').addEventListener('click', () => switchToSaferRoute(safer));
+  document.getElementById('switchSafeBtn').addEventListener('click', () => {
+    const idx = all.indexOf(safer);
+    if (idx !== -1) selectRoute(idx);
+  });
 }
 
-/** 배너의 버튼을 눌렀을 때: 서버를 다시 안 부르고, 이미 받아둔 대안 경로로 화면만 바꿔 그림 */
-function switchToSaferRoute(saferRoute) {
-  if (!lastRouteData || !activeRouteContext) return;
+/**
+ * 카드의 순서/라벨("추천"/"대안 경로 N")은 절대 안 바뀜 — index번째 경로를 "선택됨"으로 표시만 바꿈:
+ * 지도에는 그 경로 하나만 그리고, 카드 목록에서는 그 카드만 초록(recommended 스타일)이 되고 나머지는 흰색이 됨.
+ */
+function selectRoute(index) {
+  const all = getAllRoutes();
+  const chosen = all[index];
+  if (!chosen || !activeRouteContext) return;
+
+  selectedRouteIndex = index;
   clearOverlays(routeOverlays);
-  lastRoutePath = saferRoute.path;
-  renderRoute(saferRoute, true, currentOrigin, activeRouteContext.destination);
+  lastRoutePath = chosen.path;
+  renderRoute(chosen, true, currentOrigin, activeRouteContext.destination);
 
-  const otherAlternatives = [lastRouteData.recommended, ...lastRouteData.alternatives].filter((r) => r !== saferRoute);
-  otherAlternatives.forEach((alt) => renderRoute(alt, false));
-  renderResultCards(saferRoute, otherAlternatives);
+  resultsEl.querySelectorAll('.result-card').forEach((card, i) => {
+    card.classList.toggle('recommended', i === index);
+  });
 
-  // 이번에 고른 경로를 새 "추천"으로 취급해서, 다시 위험 구간이 있으면 배너가 또 뜰 수 있게 함
-  lastRouteData = { ...lastRouteData, recommended: saferRoute, alternatives: otherAlternatives };
-  updateSafeSwitchBanner(lastRouteData);
+  updateSafeSwitchBanner();
 }
 
 async function fetchAndRenderRoute(origin, destination, { silent = false, fitBounds = false } = {}) {
@@ -487,10 +505,11 @@ async function fetchAndRenderRoute(origin, destination, { silent = false, fitBou
     clearOverlays(routeOverlays);
     lastRoutePath = data.recommended.path;
     renderRoute(data.recommended, true, origin, destination);
-    data.alternatives.forEach((alt) => renderRoute(alt, false));
-    renderResultCards(data.recommended, data.alternatives);
+    // 대안 경로는 지도에 그리지 않고, 결과 카드 목록에서만 탭해서 고를 수 있게 함 (지도에 겹쳐진 얇은 선은 탭하기 어려워서)
     lastRouteData = data;
-    updateSafeSwitchBanner(data);
+    selectedRouteIndex = 0; // 새로 검색했으니 항상 추천 경로부터 선택된 상태로 시작
+    renderResultCards(data.recommended, data.alternatives);
+    updateSafeSwitchBanner();
 
     const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const trackingSuffix = trackingActive ? ' · 실시간 추적 중' : '';
@@ -762,11 +781,13 @@ function renderRoute(route, isRecommended, origin, destination) {
 }
 
 function renderResultCards(recommended, alternatives) {
-  const all = [{ ...recommended, label: '추천 (가장 안전)', recommended: true },
-    ...alternatives.map((a, i) => ({ ...a, label: `대안 경로 ${i + 1}`, recommended: false }))];
+  const all = [
+    { ...recommended, label: '추천 (가장 안전)' },
+    ...alternatives.map((a, i) => ({ ...a, label: `대안 경로 ${i + 1}` })),
+  ];
 
-  resultsEl.innerHTML = all.map((r) => `
-    <div class="result-card ${r.recommended ? 'recommended' : ''}">
+  resultsEl.innerHTML = all.map((r, i) => `
+    <div class="result-card ${i === selectedRouteIndex ? 'recommended' : ''}" style="cursor:pointer;">
       <h3>${r.label} ${r.blocked ? '⚠️ 통제구간 포함' : ''}</h3>
       <div class="meta">
         거리 ${(r.distance / 1000).toFixed(1)}km · 예상 ${Math.round(r.duration / 60)}분
@@ -777,4 +798,9 @@ function renderResultCards(recommended, alternatives) {
       </div>
     </div>
   `).join('');
+
+  // 카드는 몇 번째든(추천 카드 포함) 탭하면 그 경로가 선택됨 - 라벨/순서는 안 바뀌고 하이라이트만 바뀜
+  resultsEl.querySelectorAll('.result-card').forEach((card, i) => {
+    card.addEventListener('click', () => selectRoute(i));
+  });
 }
