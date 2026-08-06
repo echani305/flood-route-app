@@ -28,11 +28,14 @@
 
   #layout {
     display: flex;
+    flex-wrap: wrap; /* 뷰포트가 좁으면(웹뷰가 화면 너비를 잘못 알려주는 경우 대비) 지도가 자동으로 아래 줄로 내려감 */
     height: calc(100vh - 54px);
   }
 
   #sidebar {
     width: 340px;
+    max-width: 100%;
+    flex: 1 1 340px;
     padding: 16px;
     background: white;
     box-shadow: 2px 0 6px rgba(0,0,0,0.06);
@@ -40,7 +43,39 @@
     z-index: 5;
   }
 
-  #map { flex: 1; }
+  #sidebarToggle { display: none; }
+
+  #map { flex: 3 1 320px; min-height: 320px; }
+
+  /* 모바일: 좌우 배치 대신 위아래로 쌓고, 검색 패널은 접고 펼 수 있게 */
+  @media (max-width: 768px) {
+    #layout { flex-direction: column; }
+    #sidebar {
+      width: 100%;
+      max-height: 60vh;
+      padding: 0;
+      transition: max-height 0.25s ease;
+      flex-shrink: 0;
+    }
+    #sidebar.collapsed { max-height: 44px; overflow: hidden; }
+    #sidebarContent { padding: 12px 16px 16px; }
+    #sidebarToggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 11px;
+      background: #eef1f4;
+      border: none;
+      border-bottom: 1px solid #e2e2e2;
+      font-size: 13px;
+      font-weight: bold;
+      color: #1e3a5f;
+      cursor: pointer;
+    }
+    #map { flex: 1; min-height: 35vh; }
+  }
 
   .mode-selector {
     display: flex;
@@ -173,6 +208,8 @@
 
 <div id="layout">
   <div id="sidebar">
+    <button id="sidebarToggle" type="button">🗺️ 지도 크게 보기 <span id="sidebarToggleIcon">▾</span></button>
+    <div id="sidebarContent">
     <div class="mode-selector">
       <button type="button" class="mode-btn active" data-mode="car">🚗 자동차</button>
       <button type="button" class="mode-btn" data-mode="walk">🚶 도보</button>
@@ -200,6 +237,7 @@
       <div class="legend-item"><span class="legend-dot" style="background:#2a9d8f"></span> 안전 (권장 경로)</div>
       <div class="legend-item"><span class="legend-dot" style="background:#f4a261"></span> 주의</div>
       <div class="legend-item"><span class="legend-dot" style="background:#e63946"></span> 위험 / 통제 구간</div>
+    </div>
     </div>
   </div>
   <div id="map"></div>

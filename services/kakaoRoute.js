@@ -56,7 +56,22 @@ async function getCarRoutes(origin, destination, { waypoints = [] } = {}) {
   if (!res.ok) {
     throw new Error(`카카오모빌리티 자동차 길찾기 오류 (${res.status}): ${await res.text()}`);
   }
-  return parseStandardRoutes(await res.json());
+  const json = await res.json();
+  const routes = parseStandardRoutes(json);
+
+  // 디버그: 경로 좌표(vertexes)가 거리에 비해 너무 성기면(=직선처럼 보이는 원인) 원본 응답을 콘솔에 남긴다.
+  // 평균 간격 100m가 넘으면 의심 대상으로 본다 (정상적인 도로 경로는 보통 훨씬 촘촘함).
+  routes.forEach((route, i) => {
+    const avgSpacingM = route.path.length > 1 ? route.distance / (route.path.length - 1) : Infinity;
+    if (avgSpacingM > 100) {
+      console.warn(
+        `[자동차] 경로 ${i}: 거리 ${route.distance}m / 좌표 ${route.path.length}개 (평균 간격 약 ${Math.round(avgSpacingM)}m) — 도로를 못 따라가는 것으로 보임. 원본 응답 일부:`
+      );
+      console.warn(JSON.stringify(json).slice(0, 4000));
+    }
+  });
+
+  return routes;
 }
 
 /**

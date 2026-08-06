@@ -6,8 +6,46 @@ const map = new kakao.maps.Map(document.getElementById('map'), {
   level: 6,
 });
 
+// ---------- 모바일: 검색 패널 접기/펼치기 ----------
+const sidebarEl = document.getElementById('sidebar');
+const sidebarToggleBtn = document.getElementById('sidebarToggle');
+const sidebarToggleIcon = document.getElementById('sidebarToggleIcon');
+const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
+
+function setSidebarCollapsed(collapsed) {
+  sidebarEl.classList.toggle('collapsed', collapsed);
+  sidebarToggleBtn.textContent = ''; // 아이콘/텍스트 다시 구성
+  const label = document.createElement('span');
+  label.textContent = collapsed ? '검색창 펼치기 ' : '🗺️ 지도 크게 보기 ';
+  sidebarToggleBtn.appendChild(label);
+  const icon = document.createElement('span');
+  icon.textContent = collapsed ? '▸' : '▾';
+  sidebarToggleBtn.appendChild(icon);
+  // 컨테이너 크기가 바뀌면 카카오맵이 스스로 다시 그리지 못하는 경우가 있어 relayout으로 강제 갱신
+  setTimeout(() => map.relayout(), 260);
+}
+
+sidebarToggleBtn.addEventListener('click', () => {
+  setSidebarCollapsed(!sidebarEl.classList.contains('collapsed'));
+});
+
 const geocoder = new kakao.maps.services.Geocoder();
 const places = new kakao.maps.services.Places();
+
+// ---------- 장소 검색 결과를 "내 위치에서 가까운 순"으로 정렬하기 위한 기준 좌표 ----------
+// 프랜차이즈(맥도날드 등)처럼 전국에 여러 곳이 있는 키워드를 검색하면 카카오 기본 정렬(정확도순)은
+// 지역과 상관없이 아무 지점이나 잡을 수 있어서, 위치 기준 정렬(sort: DISTANCE)을 쓰기 위해 필요함.
+// 처음엔 대전 중심 좌표로 시작했다가, GPS 위치를 받아오면 그걸로 갱신한다(실패하면 대전 중심 유지).
+let searchBiasLocation = new kakao.maps.LatLng(DAEJEON_CENTER.lat, DAEJEON_CENTER.lng);
+if (navigator.geolocation) {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      searchBiasLocation = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
+    },
+    () => {}, // 권한 거부/실패 시: 그냥 대전 중심 기준으로 계속 검색
+    { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 8000 }
+  );
+}
 
 let routeOverlays = []; // 현재 지도에 그려진 경로선/마커를 추적해서 다음 검색 때 지움
 let riskZoneOverlays = [];
@@ -103,6 +141,8 @@ loadRiskZones();
 function geocodeAddress(query) {
   return new Promise((resolve, reject) => {
     // 먼저 키워드 장소 검색(건물명, 지명 등)을 시도하고, 실패하면 주소 검색으로 재시도
+    // location + sort:DISTANCE 를 줘서, "맥도날드"처럼 여러 지역에 있는 곳을 검색해도
+    // 내 위치(또는 대전 중심)에서 가장 가까운 지점이 1순위로 나오게 한다.
     places.keywordSearch(query, (data, status) => {
       if (status === kakao.maps.services.Status.OK && data.length > 0) {
         resolve({ lat: parseFloat(data[0].y), lng: parseFloat(data[0].x), name: data[0].place_name });
@@ -115,6 +155,10 @@ function geocodeAddress(query) {
           reject(new Error(`"${query}" 위치를 찾을 수 없습니다.`));
         }
       });
+    }, {
+      location: searchBiasLocation,
+      sort: kakao.maps.services.SortBy.DISTANCE,
+      radius: 20000,
     });
   });
 }
@@ -171,10 +215,15 @@ function setupAutocomplete(inputEl, listEl, storeKey) {
         const aNameMatch = a.place_name.includes(trimmed) ? 0 : 1;
         const bNameMatch = b.place_name.includes(trimmed) ? 0 : 1;
         if (aNameMatch !== bNameMatch) return aNameMatch - bNameMatch;
-        return 0; // 이름 매칭 여부가 같으면 카카오 기본 정확도 순서 유지
+        return 0; // 이름 매칭 여부가 같으면 카카오가 정렬해준 거리순 순서 유지
       });
       renderSuggestions(sorted.slice(0, 6));
-    }, { size: 10 });
+    }, {
+      size: 10,
+      location: searchBiasLocation,
+      sort: kakao.maps.services.SortBy.DISTANCE,
+      radius: 20000,
+    });
   }, 250);
 
   inputEl.addEventListener('input', () => {
@@ -288,7 +337,8 @@ searchBtn.addEventListener('click', async () => {
       selectedLocations.destination || geocodeAddress(destQuery),
     ]);
     currentOrigin = origin;
-    await fetchAndRenderRoute(origin, destination, { silent: false, fitBounds: true });
+    const result = await fetchAndRenderRoute(origin, destination, { silent: false, fitBounds: true });
+    if (result && isMobile()) setSidebarCollapsed(true); // 모바일에서는 경로 찾으면 자동으로 접어서 지도를 크게 보여줌
   } catch (err) {
     console.error(err);
     statusEl.textContent = `오류: ${err.message}`;
@@ -443,6 +493,26 @@ function renderRoute(route, isRecommended, origin, destination) {
     startMarker.setMap(map);
     endMarker.setMap(map);
     routeOverlays.push(startMarker, endMarker);
+  }
+
+  // 추천 경로에서 감지된 유턴 지점에 "↩ 유턴" 뱃지 표시 (선 하나로는 헷갈릴 수 있어서)
+  if (isRecommended && route.uTurns && route.uTurns.length > 0) {
+    route.uTurns.forEach((u) => {
+      const content = document.createElement('div');
+      content.textContent = '↩ 유턴';
+      content.style.cssText = `
+        background: #1d3557; color: white; font-size: 11px; font-weight: bold;
+        padding: 3px 7px; border-radius: 10px; white-space: nowrap;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+      `;
+      const overlay = new kakao.maps.CustomOverlay({
+        map,
+        position: new kakao.maps.LatLng(u.lat, u.lng),
+        content,
+        yAnchor: 1.8,
+      });
+      routeOverlays.push(overlay);
+    });
   }
 }
 

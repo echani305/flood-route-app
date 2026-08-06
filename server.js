@@ -6,6 +6,7 @@ const path = require('path');
 const weatherService = require('./services/weatherService');
 const kakaoRoute = require('./services/kakaoRoute');
 const riskEngine = require('./services/riskEngine');
+const riverService = require('./services/riverService');
 
 const app = express();
 app.use(cors());
@@ -14,6 +15,58 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // 대전 시청 부근 기상청 격자좌표 (필요시 지역별로 세분화 가능)
 const DEFAULT_GRID = { nx: 67, ny: 100 };
+
+// 최근에 조회한 실시간 하천 수위 (디버그 확인용, /api/river-levels 에서 그대로 보여줌)
+let lastRiverLevels = [];
+
+// 시연용 데모 모드 - 켜져 있는 동안은 실시간 갱신을 건너뛰고 아래 시뮬레이션 값을 유지함
+let demoModeActive = false;
+const DEMO_RIVER_LEVELS = [
+  { name: '갑천-정림', level: 0.25 },
+  { name: '갑천-원촌', level: 0.55 },
+  { name: '유등천-도마', level: 0.85 },
+  { name: '대전천-대전역인근', level: 0.45 },
+  { name: '대전천-중구', level: 0.7 },
+];
+
+/** HRFCO에서 최신 수위를 받아와 riskEngine.RIVER_MONITOR_POINTS.level을 갱신 */
+async function refreshRiverLevels() {
+  if (demoModeActive) {
+    console.log('[river] 데모 모드 활성 중 - 실시간 갱신 건너뜀');
+    return;
+  }
+  try {
+    const liveData = await riverService.getLiveRiverLevels();
+    riskEngine.updateRiverLevels(liveData);
+    lastRiverLevels = liveData;
+    console.log(`[river] 수위 갱신 완료 (${new Date().toLocaleTimeString('ko-KR')})`);
+  } catch (e) {
+    console.warn('[river] 수위 갱신 실패, 기존 값 유지:', e.message);
+  }
+}
+
+// 서버 시작 시 1회 조회 + 이후 10분마다 자동 갱신
+refreshRiverLevels();
+setInterval(refreshRiverLevels, 10 * 60 * 1000);
+
+// 디버그용: 지금 riskEngine이 쓰고 있는 실제 하천 수위 값을 그대로 확인
+app.get('/api/river-levels', (req, res) => {
+  res.json({ demoModeActive, lastRiverLevels, currentPoints: riskEngine.RIVER_MONITOR_POINTS });
+});
+
+// 시연 모드 켜기: 하천 위험도를 강제로 높게 세팅 (실제 데이터 아님, 색상 표시 시연용)
+app.get('/api/demo/on', (req, res) => {
+  demoModeActive = true;
+  riskEngine.updateRiverLevels(DEMO_RIVER_LEVELS);
+  res.json({ demoModeActive, message: '⚠️ 시연 모드 ON — 실제 수위가 아닌 시뮬레이션 값입니다. /api/demo/off 로 끄세요.' });
+});
+
+// 시연 모드 끄기: 즉시 실제 실시간 데이터로 복구
+app.get('/api/demo/off', async (req, res) => {
+  demoModeActive = false;
+  await refreshRiverLevels();
+  res.json({ demoModeActive, message: '실시간 실제 데이터로 복구되었습니다.' });
+});
 
 // 위험구간을 "실제 도로 경로"로 변환한 결과를 잠깐 캐싱 (매 요청마다 카카오 API를 다시 부르지 않도록)
 let riskZonesCache = null;

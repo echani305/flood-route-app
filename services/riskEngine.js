@@ -1,38 +1,54 @@
 /**
- * ⚠️ 아래 좌표들은 데모/개발용 예시 좌표입니다.
+ * ⚠️ HISTORICAL_FLOOD_POINTS / ROAD_CONTROL_ZONES는 아직 데모/개발용 예시 좌표입니다.
  * 실서비스에서는 다음 실제 API 응답으로 교체하세요:
- *  - RIVER_MONITOR_POINTS.level  <-  금강홍수통제소 수위 관측 API (관측소별 시계열)
  *  - HISTORICAL_FLOOD_POINTS      <-  행안부 침수흔적도 API (공간데이터)
  *  - ROAD_CONTROL_ZONES           <-  국토교통부 재난상황정보 API (실시간 통제 구간)
+ *
+ * RIVER_MONITOR_POINTS.level 은 더 이상 데모 값이 아니라, services/riverService.js가
+ * HRFCO(한강홍수통제소) 오픈API의 실제 수위를 가져와 updateRiverLevels()로 갱신합니다.
+ * (초기값은 API 응답이 오기 전 잠깐 쓰이는 안전한 기본값일 뿐입니다.)
  */
 
-// 대전 주요 하천 관측 지점 예시 (갑천/유등천/대전천 합류부 등)
-// ⚠️ level 값은 데모용 임시 숫자입니다. 실제 서비스에서는 금강홍수통제소 수위 API 응답으로
-//    주기적으로 갱신해야 합니다 (예: 0.2m 이하 0.1, 위험수위 근접 시 0.8~1.0 등으로 정규화).
+// 대전 주요 하천 관측 지점 (실제 HRFCO 수위관측소와 매칭됨 — services/riverService.js 참고)
+// lat/lng: 실제 관측소 좌표. level: 초기 기본값(서버 시작 직후 API 응답 오기 전까지만 사용).
 // roadSegment: 이 지점 근처의 "위험 도로 구간"을 표시하기 위해 자동차 길찾기 API로 실제
 //    도로 경로를 조회할 때 쓰는 시작/끝 좌표. (지점을 관통하도록 남북으로 약 700m 간격을 둠)
 const RIVER_MONITOR_POINTS = [
   {
-    name: '갑천-정림', lat: 36.3372, lng: 127.3652, level: 0.55,
-    roadSegment: { from: { lat: 36.3339, lng: 127.3652 }, to: { lat: 36.3405, lng: 127.3652 } },
+    name: '갑천-정림', lat: 36.3517, lng: 127.3497, level: 0.3,
+    roadSegment: { from: { lat: 36.3484, lng: 127.3497 }, to: { lat: 36.3550, lng: 127.3497 } },
   },
   {
-    name: '갑천-원촌', lat: 36.3689, lng: 127.3611, level: 0.35,
-    roadSegment: { from: { lat: 36.3656, lng: 127.3611 }, to: { lat: 36.3722, lng: 127.3611 } },
+    name: '갑천-원촌', lat: 36.3783, lng: 127.4100, level: 0.3,
+    roadSegment: { from: { lat: 36.3750, lng: 127.4100 }, to: { lat: 36.3816, lng: 127.4100 } },
   },
   {
-    name: '유등천-도마', lat: 36.3183, lng: 127.4012, level: 0.7,
-    roadSegment: { from: { lat: 36.3150, lng: 127.4012 }, to: { lat: 36.3216, lng: 127.4012 } },
+    name: '유등천-도마', lat: 36.2992, lng: 127.3844, level: 0.3,
+    roadSegment: { from: { lat: 36.2959, lng: 127.3844 }, to: { lat: 36.3025, lng: 127.3844 } },
   },
   {
-    name: '유등천-대전역인근', lat: 36.3327, lng: 127.4189, level: 0.6,
-    roadSegment: { from: { lat: 36.3294, lng: 127.4189 }, to: { lat: 36.3360, lng: 127.4189 } },
+    name: '대전천-대전역인근', lat: 36.3350, lng: 127.4381, level: 0.3,
+    roadSegment: { from: { lat: 36.3317, lng: 127.4381 }, to: { lat: 36.3383, lng: 127.4381 } },
   },
   {
-    name: '대전천-중구', lat: 36.3256, lng: 127.4258, level: 0.45,
-    roadSegment: { from: { lat: 36.3223, lng: 127.4258 }, to: { lat: 36.3289, lng: 127.4258 } },
+    name: '대전천-중구', lat: 36.3236, lng: 127.4344, level: 0.3,
+    roadSegment: { from: { lat: 36.3203, lng: 127.4344 }, to: { lat: 36.3269, lng: 127.4344 } },
   },
 ];
+
+/**
+ * riverService.getLiveRiverLevels()의 결과로 RIVER_MONITOR_POINTS[i].level을 갱신.
+ * level이 null인 항목(조회 실패/기준수위 정보 없음)은 건드리지 않고 기존 값을 유지함
+ * — "데이터를 못 받았다"를 "안전하다(0)"로 잘못 표시하지 않기 위함.
+ */
+function updateRiverLevels(liveData) {
+  if (!Array.isArray(liveData)) return;
+  for (const live of liveData) {
+    if (live.level === null || live.level === undefined) continue;
+    const point = RIVER_MONITOR_POINTS.find((p) => p.name === live.name);
+    if (point) point.level = live.level;
+  }
+}
 
 // 과거 침수 이력 지점 예시 (가중치는 침수 빈도/심각도에 비례)
 const HISTORICAL_FLOOD_POINTS = [
@@ -64,6 +80,72 @@ function haversineMeters(a, b) {
   const h =
     Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function bearingBetween(a, b) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const toDeg = (r) => (r * 180) / Math.PI;
+  const y = Math.sin(toRad(b.lng - a.lng)) * Math.cos(toRad(b.lat));
+  const x =
+    Math.cos(toRad(a.lat)) * Math.sin(toRad(b.lat)) -
+    Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(toRad(b.lng - a.lng));
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function angleDiff(a, b) {
+  const diff = Math.abs(a - b) % 360;
+  return diff > 180 ? 360 - diff : diff;
+}
+
+/**
+ * 경로(path)에서 방향이 거의 반대로 꺾이는 지점(유턴)을 찾는다.
+ * - 카카오 API의 guides(안내 문구) 데이터에 의존하지 않고, 우리가 이미 갖고 있는 좌표(path)만으로
+ *   기하학적으로 판단한다: 각 지점 앞뒤로 약 15m 떨어진 지점과 비교해 진입 방위각과 진출 방위각의
+ *   차이가 150도 이상이면 유턴으로 본다.
+ * - 실제 유턴 구간은 곡선이라 후보가 여러 개 연달아 잡히므로, 30m 이내로 가까운 후보는 하나로 묶는다.
+ */
+function detectUTurns(path) {
+  const LOOKAROUND_M = 15;
+  const U_TURN_ANGLE_DEG = 150;
+  const CLUSTER_DIST_M = 30;
+
+  if (!path || path.length < 3) return [];
+
+  const cumDist = [0];
+  for (let i = 1; i < path.length; i++) {
+    cumDist.push(cumDist[i - 1] + haversineMeters(path[i - 1], path[i]));
+  }
+
+  function findPointAtOffset(i, offsetM) {
+    const target = cumDist[i] + offsetM;
+    if (offsetM < 0) {
+      for (let j = i; j >= 0; j--) if (cumDist[j] <= target) return path[j];
+      return null; // 경로 시작 근처라 뒤쪽 비교 지점이 없음
+    }
+    for (let j = i; j < path.length; j++) if (cumDist[j] >= target) return path[j];
+    return null; // 경로 끝 근처라 앞쪽 비교 지점이 없음
+  }
+
+  const candidates = [];
+  for (let i = 1; i < path.length - 1; i++) {
+    const before = findPointAtOffset(i, -LOOKAROUND_M);
+    const after = findPointAtOffset(i, LOOKAROUND_M);
+    if (!before || !after) continue;
+
+    const inBearing = bearingBetween(before, path[i]);
+    const outBearing = bearingBetween(path[i], after);
+    if (angleDiff(inBearing, outBearing) >= U_TURN_ANGLE_DEG) {
+      candidates.push(path[i]);
+    }
+  }
+
+  const clustered = [];
+  for (const c of candidates) {
+    const near = clustered.some((g) => haversineMeters(g, c) <= CLUSTER_DIST_M);
+    if (!near) clustered.push(c);
+  }
+
+  return clustered.map(({ lat, lng }) => ({ lat, lng }));
 }
 
 /**
@@ -142,7 +224,11 @@ function scoreRoute(path, rainfallRisk) {
  */
 function rankRoutes(routes, rainfallRisk) {
   return routes
-    .map((route) => ({ ...route, ...scoreRoute(route.path, rainfallRisk) }))
+    .map((route) => ({
+      ...route,
+      ...scoreRoute(route.path, rainfallRisk),
+      uTurns: detectUTurns(route.path),
+    }))
     .sort((a, b) => {
       if (a.blocked !== b.blocked) return a.blocked ? 1 : -1;
       return a.riskScore - b.riskScore;
@@ -153,6 +239,7 @@ module.exports = {
   RIVER_MONITOR_POINTS,
   HISTORICAL_FLOOD_POINTS,
   setRoadControlZones,
+  updateRiverLevels,
   riskAtPoint,
   scoreRoute,
   rankRoutes,
