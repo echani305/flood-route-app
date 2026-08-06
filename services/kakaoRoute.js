@@ -38,40 +38,55 @@ function parseStandardRoutes(json) {
     });
 }
 
-/** 카카오모빌리티 자동차 길찾기 API 호출 (검증된 API). */
+/**
+ * 카카오모빌리티 자동차 길찾기 API 호출 (검증된 API).
+ * ⚠️ alternatives:true 옵션만으로는 카카오가 대안 경로를 거의 안 줄 때가 많음 (실제로 확인됨 -
+ * 서로 다른 두 경로에서 다 대안 0개로 응답). 그래서 priority(경로 우선순위)를 RECOMMEND/TIME/
+ * DISTANCE 세 가지로 각각 병렬 요청해서, 서로 다른 경로가 나오면 그걸 "대안들"로 합쳐서 씀.
+ * (waypoints가 있는 경유지 경로는 굳이 이렇게까지 안 하고 RECOMMEND 하나만 요청)
+ */
 async function getCarRoutes(origin, destination, { waypoints = [] } = {}) {
-  const params = new URLSearchParams({
-    origin: `${origin.lng},${origin.lat}`,
-    destination: `${destination.lng},${destination.lat}`,
-    priority: 'RECOMMEND',
-    alternatives: 'true', // 대안 경로 포함 -> 위험도 비교 후 더 안전한 경로 선택
-    road_details: 'false',
-  });
-
-  if (waypoints.length > 0) {
-    params.set('waypoints', waypoints.map((w) => `${w.lng},${w.lat}`).join('|'));
-  }
-
-  const res = await fetch(`${CAR_DIRECTIONS_URL}?${params.toString()}`, { headers: authHeader() });
-  if (!res.ok) {
-    throw new Error(`카카오모빌리티 자동차 길찾기 오류 (${res.status}): ${await res.text()}`);
-  }
-  const json = await res.json();
-  const routes = parseStandardRoutes(json);
-
-  // 디버그: 경로 좌표(vertexes)가 거리에 비해 너무 성기면(=직선처럼 보이는 원인) 원본 응답을 콘솔에 남긴다.
-  // 평균 간격 100m가 넘으면 의심 대상으로 본다 (정상적인 도로 경로는 보통 훨씬 촘촘함).
-  routes.forEach((route, i) => {
-    const avgSpacingM = route.path.length > 1 ? route.distance / (route.path.length - 1) : Infinity;
-    if (avgSpacingM > 100) {
-      console.warn(
-        `[자동차] 경로 ${i}: 거리 ${route.distance}m / 좌표 ${route.path.length}개 (평균 간격 약 ${Math.round(avgSpacingM)}m) — 도로를 못 따라가는 것으로 보임. 원본 응답 일부:`
-      );
-      console.warn(JSON.stringify(json).slice(0, 4000));
+  function buildParams(priority) {
+    const params = new URLSearchParams({
+      origin: `${origin.lng},${origin.lat}`,
+      destination: `${destination.lng},${destination.lat}`,
+      priority,
+      alternatives: 'true',
+      road_details: 'false',
+    });
+    if (waypoints.length > 0) {
+      params.set('waypoints', waypoints.map((w) => `${w.lng},${w.lat}`).join('|'));
     }
-  });
+    return params;
+  }
 
-  return routes;
+  async function fetchOne(priority) {
+    try {
+      const res = await fetch(`${CAR_DIRECTIONS_URL}?${buildParams(priority).toString()}`, { headers: authHeader() });
+      if (!res.ok) {
+        console.warn(`카카오 자동차 길찾기(priority=${priority}) 오류 (${res.status})`);
+        return [];
+      }
+      return parseStandardRoutes(await res.json());
+    } catch (e) {
+      console.warn(`카카오 자동차 길찾기(priority=${priority}) 호출 실패:`, e.message);
+      return [];
+    }
+  }
+
+  const priorities = waypoints.length > 0 ? ['RECOMMEND'] : ['RECOMMEND', 'TIME', 'DISTANCE'];
+  const results = await Promise.all(priorities.map(fetchOne));
+  const allRoutes = results.flat();
+
+  // 경로가 사실상 동일한데 priority만 달라서 중복으로 들어온 걸 제거 (거리/시간이 거의 같으면 같은 경로로 간주)
+  const deduped = [];
+  for (const route of allRoutes) {
+    const isDup = deduped.some(
+      (d) => Math.abs(d.distance - route.distance) < 50 && Math.abs(d.duration - route.duration) < 30
+    );
+    if (!isDup) deduped.push(route);
+  }
+  return deduped;
 }
 
 /**

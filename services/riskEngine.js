@@ -107,6 +107,7 @@ function angleDiff(a, b) {
 function detectUTurns(path) {
   const LOOKAROUND_M = 15;
   const U_TURN_ANGLE_DEG = 150;
+  const NET_DISPLACEMENT_MAX_M = 18; // 진짜 유턴이면 앞뒤 지점이 거의 같은 자리여야 함
   const CLUSTER_DIST_M = 30;
 
   if (!path || path.length < 3) return [];
@@ -134,9 +135,14 @@ function detectUTurns(path) {
 
     const inBearing = bearingBetween(before, path[i]);
     const outBearing = bearingBetween(path[i], after);
-    if (angleDiff(inBearing, outBearing) >= U_TURN_ANGLE_DEG) {
-      candidates.push(path[i]);
-    }
+    if (angleDiff(inBearing, outBearing) < U_TURN_ANGLE_DEG) continue;
+
+    // 방향은 반대로 꺾였어도, 다른 도로로 갈아타면서 실제 위치가 멀어진 거면 유턴이 아니라
+    // "연속된 두 번의 회전"일 뿐이다 (예: 우회전 후 바로 또 회전). 앞뒤 지점이 실제로도
+    // 가까운 경우만 진짜 유턴으로 인정한다.
+    if (haversineMeters(before, after) > NET_DISPLACEMENT_MAX_M) continue;
+
+    candidates.push(path[i]);
   }
 
   const clustered = [];

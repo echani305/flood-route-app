@@ -131,6 +131,35 @@ async function loadRiskZones() {
       attachInfoOverlay(polyline, new kakao.maps.LatLng(mid.lat, mid.lng),
         `<b>과거 침수 이력 도로</b><br/>가중치: ${(p.weight * 100).toFixed(0)}%<br/><span style="color:#999">(클릭하면 닫힘)</span>`);
     });
+
+    // 통제구역: 하천/침수 지점과 동일하게, 실제 도로를 따라 굵은 빨간 선 + "🚧 통제구간" 뱃지로 표시
+    (data.roadControlZones || []).forEach((z) => {
+      const path = (z.roadPath && z.roadPath.length > 1) ? z.roadPath : [z, z];
+      const polyline = new kakao.maps.Polyline({
+        path: path.map((pt) => new kakao.maps.LatLng(pt.lat, pt.lng)),
+        strokeWeight: 8,
+        strokeColor: '#e63946',
+        strokeOpacity: 0.85,
+        strokeStyle: 'solid',
+      });
+      polyline.setMap(map);
+      riskZoneOverlays.push(polyline);
+
+      const mid = path[Math.floor(path.length / 2)];
+      const midPos = new kakao.maps.LatLng(mid.lat, mid.lng);
+
+      const badge = document.createElement('div');
+      badge.textContent = '🚧 통제구간';
+      badge.style.cssText = `
+        background: #e63946; color: white; font-size: 11px; font-weight: bold;
+        padding: 3px 7px; border-radius: 10px; white-space: nowrap;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+      `;
+      const badgeOverlay = new kakao.maps.CustomOverlay({ map, position: midPos, content: badge, yAnchor: 2.2 });
+      riskZoneOverlays.push(badgeOverlay);
+
+      attachInfoOverlay(polyline, midPos, `<b>🚧 통제구간</b><br/>${z.reason}<br/><span style="color:#999">(클릭하면 닫힘)</span>`);
+    });
   } catch (e) {
     console.warn('위험구간 로드 실패', e);
   }
@@ -308,7 +337,78 @@ const resultsEl = document.getElementById('results');
 let activeRouteContext = null; // { destination, mode } - 실시간 추적/자동 재탐색이 이걸 기준으로 계속 갱신
 let currentOrigin = null; // 마지막으로 확인된 출발 위치 (실시간 추적 중엔 GPS로 계속 갱신됨)
 let lastRoutePath = []; // 현재 지도에 그려진 추천 경로의 전체 좌표 (경로 이탈 판정에 사용)
+let lastRouteData = null; // 최근 /api/route 응답 전체 (안전 경로 전환 버튼에서 대안 목록을 다시 쓰기 위함)
 let isRefreshing = false; // 중복 호출 방지
+
+// ---------- 위험 구간이 있으면 "더 안전한 경로로 변경" 배너/버튼 ----------
+const RISKY_THRESHOLD = 0.35; // riskColor 기준 이 값부터 주황(주의)
+const safeSwitchBanner = document.getElementById('safeSwitchBanner');
+
+/**
+ * 대안 경로 중 안전한 걸 찾음. 두 단계로 시도:
+ * 1) 전 구간이 완전히 초록(주의 미만)인 대안 - 있으면 최우선
+ * 2) 그런 게 없으면, 그래도 지금 추천 경로보다는 덜 위험한 대안 중 가장 나은 것
+ *    (폭우 극한 모드처럼 출발지 자체가 위험구간 근처면, 완전 초록 대안이 아예 불가능할 수 있어서
+ *     이 경우엔 "그나마 더 안전한" 것으로 대체함 - 초록이라고 거짓말은 안 함)
+ */
+function findSaferAlternative(recommended, alternatives) {
+  if (!alternatives || alternatives.length === 0) return { route: null, fullyGreen: false };
+
+  const fullyGreen = alternatives
+    .filter((r) => !r.blocked && r.maxRisk < RISKY_THRESHOLD)
+    .sort((a, b) => a.maxRisk - b.maxRisk);
+  if (fullyGreen.length > 0) return { route: fullyGreen[0], fullyGreen: true };
+
+  const lessRisky = alternatives
+    .filter((r) => !r.blocked && r.maxRisk < recommended.maxRisk)
+    .sort((a, b) => a.maxRisk - b.maxRisk);
+  if (lessRisky.length > 0) return { route: lessRisky[0], fullyGreen: false };
+
+  return { route: null, fullyGreen: false };
+}
+
+function updateSafeSwitchBanner(data) {
+  const hasRisk = !data.recommended.blocked && data.recommended.maxRisk >= RISKY_THRESHOLD;
+  const { route: safer, fullyGreen } = hasRisk
+    ? findSaferAlternative(data.recommended, data.alternatives)
+    : { route: null, fullyGreen: false };
+
+  // 디버그용: 버튼이 왜 뜨는지/안 뜨는지 콘솔에서 바로 확인 가능하게
+  console.log('[안전경로 버튼 판단]', {
+    추천_최고위험도: data.recommended.maxRisk,
+    대안_개수: data.alternatives.length,
+    대안들: data.alternatives.map((a) => ({ maxRisk: a.maxRisk, blocked: a.blocked })),
+    선택된_대안: safer ? { maxRisk: safer.maxRisk, fullyGreen } : null,
+  });
+
+  if (!hasRisk || !safer) {
+    safeSwitchBanner.classList.remove('show');
+    safeSwitchBanner.innerHTML = '';
+    return;
+  }
+
+  const label = data.recommended.maxRisk >= 0.65 ? '위험' : '주의';
+  const btnLabel = fullyGreen ? '안전한 길(초록색)로만 변경' : '그나마 더 안전한 경로로 변경';
+  safeSwitchBanner.innerHTML = `⚠️ 이 경로는 <b>${label}</b> 구간을 지나요.<button id="switchSafeBtn" type="button">${btnLabel}</button>`;
+  safeSwitchBanner.classList.add('show');
+  document.getElementById('switchSafeBtn').addEventListener('click', () => switchToSaferRoute(safer));
+}
+
+/** 배너의 버튼을 눌렀을 때: 서버를 다시 안 부르고, 이미 받아둔 대안 경로로 화면만 바꿔 그림 */
+function switchToSaferRoute(saferRoute) {
+  if (!lastRouteData || !activeRouteContext) return;
+  clearOverlays(routeOverlays);
+  lastRoutePath = saferRoute.path;
+  renderRoute(saferRoute, true, currentOrigin, activeRouteContext.destination);
+
+  const otherAlternatives = [lastRouteData.recommended, ...lastRouteData.alternatives].filter((r) => r !== saferRoute);
+  otherAlternatives.forEach((alt) => renderRoute(alt, false));
+  renderResultCards(saferRoute, otherAlternatives);
+
+  // 이번에 고른 경로를 새 "추천"으로 취급해서, 다시 위험 구간이 있으면 배너가 또 뜰 수 있게 함
+  lastRouteData = { ...lastRouteData, recommended: saferRoute, alternatives: otherAlternatives };
+  updateSafeSwitchBanner(lastRouteData);
+}
 
 async function fetchAndRenderRoute(origin, destination, { silent = false, fitBounds = false } = {}) {
   if (isRefreshing) return null;
@@ -335,6 +435,8 @@ async function fetchAndRenderRoute(origin, destination, { silent = false, fitBou
     renderRoute(data.recommended, true, origin, destination);
     data.alternatives.forEach((alt) => renderRoute(alt, false));
     renderResultCards(data.recommended, data.alternatives);
+    lastRouteData = data;
+    updateSafeSwitchBanner(data);
 
     const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const trackingSuffix = trackingActive ? ' · 실시간 추적 중' : '';

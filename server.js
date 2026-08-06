@@ -7,6 +7,7 @@ const weatherService = require('./services/weatherService');
 const kakaoRoute = require('./services/kakaoRoute');
 const riskEngine = require('./services/riskEngine');
 const riverService = require('./services/riverService');
+const roadControlService = require('./services/roadControlService');
 
 const app = express();
 app.use(cors());
@@ -21,12 +22,24 @@ let lastRiverLevels = [];
 
 // 시연용 데모 모드 - 켜져 있는 동안은 실시간 갱신을 건너뛰고 아래 시뮬레이션 값을 유지함
 let demoModeActive = false;
+// null이면 실제 기상청 강수 위험도를 그대로 씀. 숫자(0~1)면 그 값으로 강제 (폭우 시나리오용)
+let forcedRainfallRisk = null;
+
 const DEMO_RIVER_LEVELS = [
   { name: '갑천-정림', level: 0.25 },
   { name: '갑천-원촌', level: 0.55 },
   { name: '유등천-도마', level: 0.85 },
   { name: '대전천-대전역인근', level: 0.45 },
   { name: '대전천-중구', level: 0.7 },
+];
+
+// "폭우가 극단적으로 심하게 온다" 시나리오 - 강수 위험도 100% + 5개 관측소 전부 심각 수위 근처로
+const STORM_RIVER_LEVELS = [
+  { name: '갑천-정림', level: 0.95 },
+  { name: '갑천-원촌', level: 0.97 },
+  { name: '유등천-도마', level: 1.0 },
+  { name: '대전천-대전역인근', level: 0.96 },
+  { name: '대전천-중구', level: 0.98 },
 ];
 
 /** HRFCO에서 최신 수위를 받아와 riskEngine.RIVER_MONITOR_POINTS.level을 갱신 */
@@ -49,23 +62,85 @@ async function refreshRiverLevels() {
 refreshRiverLevels();
 setInterval(refreshRiverLevels, 10 * 60 * 1000);
 
-// 디버그용: 지금 riskEngine이 쓰고 있는 실제 하천 수위 값을 그대로 확인
-app.get('/api/river-levels', (req, res) => {
-  res.json({ demoModeActive, lastRiverLevels, currentPoints: riskEngine.RIVER_MONITOR_POINTS });
+// 최근에 조회한 도로 통제 구역 (디버그 확인용)
+let lastRoadControlZones = [];
+let demoRoadBlockActive = false;
+
+/** ITS 재난상황정보에서 대전 지역 도로 통제 구역을 받아와 riskEngine에 반영 */
+async function refreshRoadControlZones() {
+  if (demoRoadBlockActive) {
+    console.log('[road-control] 시연 모드 활성 중 - 실시간 갱신 건너뜀');
+    return;
+  }
+  try {
+    const zones = await roadControlService.getActiveRoadControlZones();
+    riskEngine.setRoadControlZones(zones);
+    lastRoadControlZones = zones;
+    riskZonesCache = null; // /api/risk-zones가 지도에 최신 통제구역을 바로 반영하도록 캐시 무효화
+    console.log(`[road-control] 통제구역 갱신 완료 (${zones.length}건, ${new Date().toLocaleTimeString('ko-KR')})`);
+  } catch (e) {
+    console.warn('[road-control] 통제구역 갱신 실패, 기존 값 유지:', e.message);
+  }
+}
+
+refreshRoadControlZones();
+setInterval(refreshRoadControlZones, 10 * 60 * 1000);
+
+// 디버그용: 지금 riskEngine이 쓰고 있는 실제 도로 통제 구역 확인
+app.get('/api/road-control-zones', (req, res) => {
+  res.json({ demoRoadBlockActive, lastRoadControlZones });
 });
 
-// 시연 모드 켜기: 하천 위험도를 강제로 높게 세팅 (실제 데이터 아님, 색상 표시 시연용)
+// 디버그용: 지금 riskEngine이 쓰고 있는 실제 하천 수위 값을 그대로 확인
+app.get('/api/river-levels', (req, res) => {
+  res.json({ demoModeActive, forcedRainfallRisk, lastRiverLevels, currentPoints: riskEngine.RIVER_MONITOR_POINTS });
+});
+
+// 시연 모드 켜기: 하천 위험도를 강제로 높게 세팅 (실제 데이터 아님, 색상 표시 시연용 - 초록/주황/빨강 섞임)
 app.get('/api/demo/on', (req, res) => {
   demoModeActive = true;
   riskEngine.updateRiverLevels(DEMO_RIVER_LEVELS);
   res.json({ demoModeActive, message: '⚠️ 시연 모드 ON — 실제 수위가 아닌 시뮬레이션 값입니다. /api/demo/off 로 끄세요.' });
 });
 
-// 시연 모드 끄기: 즉시 실제 실시간 데이터로 복구
+// "폭우가 극단적으로 심하게 온다" 시나리오: 강수 위험도 100% + 하천 전부 심각 수위 근처로 강제
+app.get('/api/demo/storm/on', (req, res) => {
+  demoModeActive = true;
+  forcedRainfallRisk = 1.0;
+  riskEngine.updateRiverLevels(STORM_RIVER_LEVELS);
+  res.json({
+    demoModeActive,
+    forcedRainfallRisk,
+    message: '⛈️ 폭우 극한 시나리오 ON — 강수 위험도 100% + 하천 5곳 전부 심각 수위 근처로 강제 설정했습니다. 실제 데이터 아님. /api/demo/off 로 끄세요.',
+  });
+});
+
+// 시연 모드(일반/폭우 공통) 끄기: 즉시 실제 실시간 데이터로 복구
 app.get('/api/demo/off', async (req, res) => {
   demoModeActive = false;
+  forcedRainfallRisk = null;
+  demoRoadBlockActive = false;
+  riskZonesCache = null;
   await refreshRiverLevels();
-  res.json({ demoModeActive, message: '실시간 실제 데이터로 복구되었습니다.' });
+  await refreshRoadControlZones();
+  res.json({ demoModeActive, forcedRainfallRisk, demoRoadBlockActive, message: '실시간 실제 데이터로 복구되었습니다.' });
+});
+
+// 시연용 도로 통제구역 강제 삽입: 갑천-정림(만년교) 근처를 통제구역으로 만들어 경로가 실제로 피해가는지 확인
+const DEMO_ROAD_BLOCK_ZONES = [
+  { lat: 36.3517, lng: 127.3497, radiusM: 500, reason: '⚠️ 시연용 — 폭우로 인한 도로 침수 통제 (실제 데이터 아님)' },
+];
+
+app.get('/api/demo/road-block/on', (req, res) => {
+  demoRoadBlockActive = true;
+  riskEngine.setRoadControlZones(DEMO_ROAD_BLOCK_ZONES);
+  lastRoadControlZones = DEMO_ROAD_BLOCK_ZONES;
+  riskZonesCache = null; // /api/risk-zones가 지도에 새 통제구역을 바로 반영하도록 캐시 무효화
+  res.json({
+    demoRoadBlockActive,
+    zones: DEMO_ROAD_BLOCK_ZONES,
+    message: '⚠️ 도로 통제 시연 모드 ON — 만년교 근처 500m가 강제로 통제구역이 됩니다. /api/demo/off 로 끄세요.',
+  });
 });
 
 // 위험구간을 "실제 도로 경로"로 변환한 결과를 잠깐 캐싱 (매 요청마다 카카오 API를 다시 부르지 않도록)
@@ -112,7 +187,25 @@ async function buildRoadBasedRiskZones() {
     }))
   );
 
-  riskZonesCache = { riverPoints, historicalFloodPoints };
+  // 통제구역: 중심점 남북으로 짧은 도로 구간을 만들어서, 하천/침수 지점과 똑같이 실제 도로 경로로 표시
+  const roadControlZones = await Promise.all(
+    lastRoadControlZones.map(async (z) => {
+      const offsetDeg = Math.min(0.006, Math.max(0.002, z.radiusM / 111000)); // 반경에 비례해 표시 구간 길이 조정
+      const roadSegment = {
+        from: { lat: z.lat - offsetDeg, lng: z.lng },
+        to: { lat: z.lat + offsetDeg, lng: z.lng },
+      };
+      return {
+        lat: z.lat,
+        lng: z.lng,
+        radiusM: z.radiusM,
+        reason: z.reason || '통제구역',
+        roadPath: await resolveRoadPath({ ...z, roadSegment }),
+      };
+    })
+  );
+
+  riskZonesCache = { riverPoints, historicalFloodPoints, roadControlZones };
   riskZonesCacheTime = now;
   return riskZonesCache;
 }
@@ -128,6 +221,7 @@ app.get('/api/risk-zones', async (req, res) => {
     res.json({
       riverPoints: riskEngine.RIVER_MONITOR_POINTS,
       historicalFloodPoints: riskEngine.HISTORICAL_FLOOD_POINTS,
+      roadControlZones: lastRoadControlZones,
     });
   }
 });
@@ -135,6 +229,9 @@ app.get('/api/risk-zones', async (req, res) => {
 // 현재 강수 위험도 조회
 app.get('/api/weather-risk', async (req, res) => {
   try {
+    if (forcedRainfallRisk !== null) {
+      return res.json({ rainfallRisk: forcedRainfallRisk, forecast: [], forced: true });
+    }
     const nx = req.query.nx || DEFAULT_GRID.nx;
     const ny = req.query.ny || DEFAULT_GRID.ny;
     const forecast = await weatherService.getVilageForecast(nx, ny);
@@ -162,13 +259,17 @@ app.get('/api/route', async (req, res) => {
     const origin = { lat: parseFloat(originLat), lng: parseFloat(originLng) };
     const destination = { lat: parseFloat(destLat), lng: parseFloat(destLng) };
 
-    // 1) 현재 강수 위험도
+    // 1) 현재 강수 위험도 (폭우 시나리오 켜져 있으면 강제값 사용)
     let rainfallRisk = 0;
-    try {
-      const forecast = await weatherService.getVilageForecast(nx || DEFAULT_GRID.nx, ny || DEFAULT_GRID.ny);
-      rainfallRisk = weatherService.rainfallRiskFromForecast(forecast);
-    } catch (e) {
-      console.warn('기상청 API 호출 실패, 강수 위험도 0으로 진행:', e.message);
+    if (forcedRainfallRisk !== null) {
+      rainfallRisk = forcedRainfallRisk;
+    } else {
+      try {
+        const forecast = await weatherService.getVilageForecast(nx || DEFAULT_GRID.nx, ny || DEFAULT_GRID.ny);
+        rainfallRisk = weatherService.rainfallRiskFromForecast(forecast);
+      } catch (e) {
+        console.warn('기상청 API 호출 실패, 강수 위험도 0으로 진행:', e.message);
+      }
     }
 
     // 2) 선택한 이동수단으로 경로 후보 조회 (자동차는 대안 경로 포함, 도보/자전거/대중교통은 단일 경로)

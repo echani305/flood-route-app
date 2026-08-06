@@ -170,6 +170,32 @@
 
   #status { font-size: 13px; color: #888; margin-top: 8px; min-height: 18px; }
 
+  .safe-switch-banner {
+    display: none;
+    background: #fff4e5;
+    border: 1px solid #f4a261;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #7a4a1e;
+    margin-bottom: 12px;
+  }
+  .safe-switch-banner.show { display: block; }
+  .safe-switch-banner button {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px;
+    background: #e76f51;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  .safe-switch-banner button:hover { background: #d65f41; }
+
   .result-card {
     margin-top: 16px;
     padding: 12px;
@@ -230,6 +256,8 @@
     <button id="trackingBtn" type="button">🛰 실시간 추적 시작</button>
     <div id="trackingStatus"></div>
     <div id="status"></div>
+
+    <div id="safeSwitchBanner" class="safe-switch-banner"></div>
 
     <div id="results"></div>
 
