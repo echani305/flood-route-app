@@ -225,6 +225,97 @@ async function loadRiskZones() {
 }
 loadRiskZones();
 
+// ---------- 위도/경도 -> 기상청 격자좌표(nx, ny) 변환 ----------
+// 기상청 공식 변환식(Lambert Conformal Conic 투영). 위경도를 그대로 못 쓰고 이 계산이 꼭 필요함.
+function latLngToWeatherGrid(lat, lng) {
+  const RE = 6371.00877, GRID = 5.0, SLAT1 = 30.0, SLAT2 = 60.0, OLON = 126.0, OLAT = 38.0, XO = 43, YO = 136;
+  const DEGRAD = Math.PI / 180.0;
+
+  const re = RE / GRID;
+  const slat1 = SLAT1 * DEGRAD;
+  const slat2 = SLAT2 * DEGRAD;
+  const olon = OLON * DEGRAD;
+  const olat = OLAT * DEGRAD;
+
+  let sn = Math.tan(Math.PI * 0.25 + slat2 * 0.5) / Math.tan(Math.PI * 0.25 + slat1 * 0.5);
+  sn = Math.log(Math.cos(slat1) / Math.cos(slat2)) / Math.log(sn);
+  let sf = Math.tan(Math.PI * 0.25 + slat1 * 0.5);
+  sf = (Math.pow(sf, sn) * Math.cos(slat1)) / sn;
+  let ro = Math.tan(Math.PI * 0.25 + olat * 0.5);
+  ro = (re * sf) / Math.pow(ro, sn);
+
+  let ra = Math.tan(Math.PI * 0.25 + lat * DEGRAD * 0.5);
+  ra = (re * sf) / Math.pow(ra, sn);
+  let theta = lng * DEGRAD - olon;
+  if (theta > Math.PI) theta -= 2 * Math.PI;
+  if (theta < -Math.PI) theta += 2 * Math.PI;
+  theta *= sn;
+
+  return {
+    nx: Math.floor(ra * Math.sin(theta) + XO + 0.5),
+    ny: Math.floor(ro - ra * Math.cos(theta) + YO + 0.5),
+  };
+}
+
+/** 브라우저 위치 권한이 있으면 그 좌표로, 없거나 거부되면 서버 기본값(대전 중심)으로 자동 전환 */
+function getWeatherGridQuery() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve('');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { nx, ny } = latLngToWeatherGrid(pos.coords.latitude, pos.coords.longitude);
+        resolve(`?nx=${nx}&ny=${ny}`);
+      },
+      () => resolve(''), // 거부/실패 시 그냥 기본값(대전 중심)으로
+      { enableHighAccuracy: false, maximumAge: 10 * 60 * 1000, timeout: 5000 }
+    );
+  });
+}
+
+// ---------- 지도 위 "오늘 날씨" 오버레이 ----------
+const SKY_ICON = { 1: '☀️', 3: '⛅', 4: '☁️' };
+const PTY_ICON = { 1: '🌧️', 2: '🌨️', 3: '❄️', 4: '🌦️' }; // 0(없음)은 아이콘 없이 하늘상태 아이콘만 사용
+
+async function loadTodayWeather() {
+  const weatherEl = document.getElementById('weatherOverlay');
+  try {
+    const gridQuery = await getWeatherGridQuery();
+    const res = await fetch(`/api/weather-today${gridQuery}`);
+    const data = await res.json();
+    const now = (data.hours || [])[0];
+    if (!now || now.tempC === null) {
+      weatherEl.textContent = '날씨 정보 없음';
+    } else {
+      const icon = (now.pty && PTY_ICON[now.pty]) || SKY_ICON[now.sky] || '🌡️';
+      const popText = now.pop !== null ? `<span class="pop"> 강수 ${now.pop}%</span>` : '';
+      weatherEl.innerHTML = `${icon} <span class="temp">${now.tempC}°</span>${popText}`;
+    }
+  } catch (e) {
+    console.warn('오늘 날씨 로드 실패', e);
+    weatherEl.textContent = '날씨 정보 없음';
+  }
+  loadAirQuality(); // 날씨 자리에 이어서 미세먼지도 붙여서 표시 (같은 위젯에 추가됨)
+}
+
+const DUST_COLOR = { 1: '#2a9d8f', 2: '#1e88e5', 3: '#f4a261', 4: '#e63946' };
+
+async function loadAirQuality() {
+  const weatherEl = document.getElementById('weatherOverlay');
+  try {
+    const res = await fetch('/api/air-quality');
+    const data = await res.json();
+    if (!data.pm10Grade) return; // 못 받아왔으면 날씨 정보만 표시된 채로 둠
+
+    const color = DUST_COLOR[data.pm10Grade] || '#666';
+    const dustHtml = `<span style="margin-left:6px; padding-left:6px; border-left:1px solid #ddd; color:${color}; font-weight:bold;">미세먼지 ${data.pm10Label}</span>`;
+    weatherEl.innerHTML += dustHtml;
+  } catch (e) {
+    console.warn('미세먼지 로드 실패', e);
+  }
+}
+loadTodayWeather();
+setInterval(loadTodayWeather, 30 * 60 * 1000); // 30분마다 갱신
+
 // ---------- 주소 -> 좌표 변환 ----------
 function geocodeAddress(query) {
   return new Promise((resolve, reject) => {

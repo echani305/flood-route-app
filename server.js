@@ -8,6 +8,7 @@ const kakaoRoute = require('./services/kakaoRoute');
 const riskEngine = require('./services/riskEngine');
 const riverService = require('./services/riverService');
 const roadControlService = require('./services/roadControlService');
+const airQualityService = require('./services/airQualityService');
 
 const app = express();
 app.use(cors());
@@ -239,6 +240,43 @@ app.get('/api/weather-risk', async (req, res) => {
     res.json({ rainfallRisk, forecast: forecast.slice(0, 4) });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 오늘 날씨(기온/하늘상태/강수형태/강수확률) - 강수 위험도 계산용으로 이미 받아오던 데이터를 그대로 재사용
+app.get('/api/weather-today', async (req, res) => {
+  try {
+    const nx = req.query.nx || DEFAULT_GRID.nx;
+    const ny = req.query.ny || DEFAULT_GRID.ny;
+    const forecast = await weatherService.getVilageForecast(nx, ny);
+    const hours = forecast.slice(0, 8).map((item) => ({
+      date: item.date,
+      time: item.time, // "HHMM"
+      tempC: item.TMP !== undefined ? Math.round(parseFloat(item.TMP)) : null,
+      sky: item.SKY !== undefined ? parseInt(item.SKY, 10) : null, // 1:맑음 3:구름많음 4:흐림
+      pty: item.PTY !== undefined ? parseInt(item.PTY, 10) : null, // 0:없음 1:비 2:비/눈 3:눈 4:소나기
+      pop: item.POP !== undefined ? parseInt(item.POP, 10) : null, // 강수확률(%)
+      humidity: item.REH !== undefined ? parseInt(item.REH, 10) : null,
+    }));
+    res.json({ hours });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 대전 지역 미세먼지(PM10)/초미세먼지(PM2.5) - 에어코리아 API, 대전 시도 단위 평균값
+let lastAirQuality = null;
+app.get('/api/air-quality', async (req, res) => {
+  try {
+    const data = await airQualityService.getDaejeonAirQuality();
+    lastAirQuality = data;
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    // 실패해도 마지막으로 받아온 값이라도 있으면 그거라도 내려줌 (완전히 빈 위젯보다 나음)
+    if (lastAirQuality) return res.json({ ...lastAirQuality, stale: true });
     res.status(500).json({ error: err.message });
   }
 });

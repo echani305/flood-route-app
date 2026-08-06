@@ -6,7 +6,12 @@ const BASE_URL = 'http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVi
 const BASE_TIMES = ['0200', '0500', '0800', '1100', '1400', '1700', '2000', '2300'];
 
 function getLatestBaseDateTime(now = new Date()) {
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000 - now.getTimezoneOffset() * 60 * 1000);
+  // ⚠️ 서버가 실행되는 컴퓨터의 시간대(로컬 맥=한국시간 vs 클라우드=UTC인 경우가 많음)에 따라
+  // 결과가 달라지면 안 되므로, now.getTime()(절대 UTC 타임스탬프)에 9시간만 더하고 그 뒤로는
+  // 반드시 getUTC*() 메서드로만 읽는다. (getTimezoneOffset()을 같이 쓰면, 이미 한국시간인 로컬에서
+  // 9시간이 중복으로 더해져서 하루가 통째로 밀리는 버그가 생김 — 실제로 이 버그로 08/06인데
+  // 08/07 날짜로 요청되는 문제가 있었음)
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const hh = kst.getUTCHours();
   const mm = kst.getUTCMinutes();
   const nowMinutes = hh * 60 + mm;
@@ -56,7 +61,14 @@ async function getVilageForecast(nx, ny) {
 
   const res = await fetch(`${BASE_URL}?${params.toString()}`);
   const json = await res.json();
+  const header = json?.response?.header;
   const items = json?.response?.body?.items?.item || [];
+
+  // 기상청 API는 실패해도 HTTP 200을 주고 header.resultCode로만 성공/실패를 알려주는 경우가 많아서,
+  // 항목이 비어있을 때 원인을 알 수 있게 header를 콘솔에 남김 (00이 정상)
+  if (items.length === 0) {
+    console.warn('[weatherService] 예보 항목이 비어있음. 응답 header:', JSON.stringify(header), '요청 파라미터:', { base_date, base_time, nx, ny });
+  }
 
   // 항목을 카테고리별로 정리 (RN1: 1시간 강수량, PTY: 강수형태, POP: 강수확률)
   const summary = {};
