@@ -6,26 +6,32 @@ const map = new kakao.maps.Map(document.getElementById('map'), {
   level: 6,
 });
 
-// ---------- 바텀 시트: 드래그로 접었다 펼쳤다 (핸들 바를 위아래로 끌기) ----------
-const sheetEl = document.getElementById('sheet');
-const sheetHandleEl = document.getElementById('sheetHandle');
-const sheetSummaryEl = document.getElementById('sheetSummary');
-const routeSummaryTextEl = document.getElementById('routeSummaryText');
-const editRouteBtn = document.getElementById('editRouteBtn');
-const sheetInputSection = document.getElementById('sheetInputSection');
-const sheetResultsSection = document.getElementById('sheetResultsSection');
+// ---------- 상단 검색 바 -> 전체화면 검색 오버레이 열고 닫기 ----------
+const topSearchBar = document.getElementById('topSearchBar');
+const searchOverlay = document.getElementById('searchOverlay');
+const closeSearchOverlayBtn = document.getElementById('closeSearchOverlay');
 
-const SHEET_PEEK = 88; // 핸들만 겨우 보이는 높이(px)
-const sheetMidHeight = () => Math.round(window.innerHeight * 0.46);
-const sheetFullHeight = () => Math.round(window.innerHeight * 0.85);
+function openSearchOverlay() {
+  searchOverlay.classList.add('open');
+}
+function closeSearchOverlay() {
+  searchOverlay.classList.remove('open');
+}
+topSearchBar.addEventListener('click', openSearchOverlay);
+closeSearchOverlayBtn.addEventListener('click', closeSearchOverlay);
+
+// ---------- 바텀 시트: 헤더를 위아래로 끌면 접혔다 펼쳐짐(펼친 만큼만 content가 보임) ----------
+const sheetEl = document.getElementById('sheet');
+const sheetHeaderEl = document.getElementById('sheetHeader');
+
+const sheetMidHeight = () => Math.round(window.innerHeight * 0.42);
+const sheetFullHeight = () => Math.round(window.innerHeight * 0.8);
+const sheetPeekHeight = () => Math.round(sheetHeaderEl.getBoundingClientRect().height) || 56;
 
 function setSheetHeight(px, animate = true) {
   sheetEl.classList.toggle('dragging', !animate);
   sheetEl.style.height = `${px}px`;
-  if (!animate) {
-    // 강제 리플로우 후 다시 애니메이션 켤 수 있게(연속 드래그 대비)
-    void sheetEl.offsetHeight;
-  }
+  if (!animate) void sheetEl.offsetHeight; // 강제 리플로우(연속 드래그 대비)
   setTimeout(() => map.relayout(), animate ? 300 : 0);
 }
 
@@ -33,18 +39,18 @@ let dragStartY = 0;
 let dragStartHeight = 0;
 let dragging = false;
 
-sheetHandleEl.addEventListener('pointerdown', (e) => {
+sheetHeaderEl.addEventListener('pointerdown', (e) => {
   dragging = true;
   dragStartY = e.clientY;
   dragStartHeight = sheetEl.getBoundingClientRect().height;
   sheetEl.classList.add('dragging');
-  sheetHandleEl.setPointerCapture(e.pointerId);
+  sheetHeaderEl.setPointerCapture(e.pointerId);
 });
 
-sheetHandleEl.addEventListener('pointermove', (e) => {
+sheetHeaderEl.addEventListener('pointermove', (e) => {
   if (!dragging) return;
   const delta = dragStartY - e.clientY; // 위로 끌면 양수
-  const newHeight = Math.min(sheetFullHeight(), Math.max(SHEET_PEEK, dragStartHeight + delta));
+  const newHeight = Math.min(sheetFullHeight(), Math.max(sheetPeekHeight(), dragStartHeight + delta));
   sheetEl.style.height = `${newHeight}px`;
 });
 
@@ -54,39 +60,23 @@ function endSheetDrag(e) {
   sheetEl.classList.remove('dragging');
   const movedY = Math.abs(dragStartY - (e.clientY ?? dragStartY));
   const h = sheetEl.getBoundingClientRect().height;
+  const peek = sheetPeekHeight();
 
   let target;
   if (movedY < 6) {
     // 드래그가 거의 없었으면 탭으로 간주 -> 접힌 상태면 펼치고, 펼쳐져 있으면 접기
-    target = h <= SHEET_PEEK + 20 ? sheetMidHeight() : SHEET_PEEK;
+    target = h <= peek + 20 ? sheetMidHeight() : peek;
   } else {
-    const snaps = [SHEET_PEEK, sheetMidHeight(), sheetFullHeight()];
+    const snaps = [peek, sheetMidHeight(), sheetFullHeight()];
     target = snaps.reduce((a, b) => (Math.abs(b - h) < Math.abs(a - h) ? b : a));
   }
   setSheetHeight(target);
 }
-sheetHandleEl.addEventListener('pointerup', endSheetDrag);
-sheetHandleEl.addEventListener('pointercancel', endSheetDrag);
+sheetHeaderEl.addEventListener('pointerup', endSheetDrag);
+sheetHeaderEl.addEventListener('pointercancel', endSheetDrag);
 
-/** 검색 성공 후: 출발지/도착지 입력은 접어서 요약 형태로 보여주고, 결과 영역을 보여줌 */
-function showResultsView(originLabel, destLabel) {
-  sheetInputSection.classList.add('collapsed');
-  sheetResultsSection.style.display = 'block';
-  sheetSummaryEl.classList.add('show');
-  routeSummaryTextEl.textContent = `${originLabel} → ${destLabel}`;
-  editRouteBtn.textContent = '수정';
-}
-
-/** 요약 바의 "수정" 버튼: 입력창을 펼쳤다 접었다 토글 (결과는 그대로 아래에 남아있음) */
-function toggleInputSection() {
-  const collapsed = sheetInputSection.classList.toggle('collapsed');
-  editRouteBtn.textContent = collapsed ? '수정' : '닫기';
-  if (!collapsed) {
-    setSheetHeight(sheetFullHeight());
-    document.getElementById('originInput').focus();
-  }
-}
-editRouteBtn.addEventListener('click', toggleInputSection);
+// 처음엔 보여줄 결과/추적 정보가 없으니 접힌 상태(헤더만)로 시작
+setSheetHeight(sheetPeekHeight(), false);
 
 const geocoder = new kakao.maps.services.Geocoder();
 const places = new kakao.maps.services.Places();
@@ -476,7 +466,7 @@ const selectedMode = 'car';
 
 // ---------- 경로 검색 (재탐색에서도 재사용하는 공통 함수) ----------
 const searchBtn = document.getElementById('searchBtn');
-const statusEl = document.getElementById('status');
+const statusEl = document.getElementById('overlayStatus');
 const resultsEl = document.getElementById('results');
 
 let activeRouteContext = null; // { destination, mode } - 실시간 추적/자동 재탐색이 이걸 기준으로 계속 갱신
@@ -571,6 +561,10 @@ function selectRoute(index) {
   });
 
   updateSafeSwitchBanner();
+
+  // 카드를 골랐다 = 결정했다는 뜻이니 검색 화면은 닫고 지도+시트를 보여줌
+  closeSearchOverlay();
+  setSheetHeight(sheetMidHeight());
 }
 
 async function fetchAndRenderRoute(origin, destination, { silent = false, fitBounds = false } = {}) {
@@ -662,7 +656,8 @@ searchBtn.addEventListener('click', async () => {
     currentOrigin = origin;
     const result = await fetchAndRenderRoute(origin, destination, { silent: false, fitBounds: true });
     if (result) {
-      showResultsView(origin.name || '출발지', destination.name || '도착지');
+      // 상단 검색바를 이번 경로 요약으로 갱신. 오버레이는 안 닫음 - 결과 목록에서 카드를 골라야 닫힘(selectRoute)
+      topSearchBar.textContent = `${origin.name || '출발지'} → ${destination.name || '도착지'}`;
       setSheetHeight(sheetMidHeight());
     }
   } catch (err) {
@@ -739,11 +734,11 @@ const trackingStatusEl = document.getElementById('trackingStatus');
 
 function startTracking() {
   if (!activeRouteContext) {
-    statusEl.textContent = '먼저 "안전 경로 찾기"로 경로를 검색한 뒤 실시간 추적을 켜주세요.';
+    trackingStatusEl.textContent = '먼저 "안전 경로 찾기"로 경로를 검색한 뒤 실시간 추적을 켜주세요.';
     return;
   }
   if (!navigator.geolocation) {
-    statusEl.textContent = '이 브라우저는 위치 추적(GPS)을 지원하지 않습니다.';
+    trackingStatusEl.textContent = '이 브라우저는 위치 추적(GPS)을 지원하지 않습니다.';
     return;
   }
 
@@ -834,7 +829,7 @@ function renderRoute(route, isRecommended, origin, destination) {
       currentOrigin = newOrigin;
       selectedLocations.origin = newOrigin;
       document.getElementById('originInput').value = '(지도에서 직접 지정한 위치)';
-      routeSummaryTextEl.textContent = `(지도에서 지정한 위치) → ${document.getElementById('destInput').value}`;
+      topSearchBar.textContent = `(지도에서 지정한 위치) → ${document.getElementById('destInput').value}`;
       fetchAndRenderRoute(newOrigin, activeRouteContext.destination, { silent: false, fitBounds: false });
     });
 
@@ -845,7 +840,7 @@ function renderRoute(route, isRecommended, origin, destination) {
       activeRouteContext = { ...activeRouteContext, destination: newDestination };
       selectedLocations.destination = newDestination;
       document.getElementById('destInput').value = '(지도에서 직접 지정한 위치)';
-      routeSummaryTextEl.textContent = `${document.getElementById('originInput').value} → (지도에서 지정한 위치)`;
+      topSearchBar.textContent = `${document.getElementById('originInput').value} → (지도에서 지정한 위치)`;
       fetchAndRenderRoute(currentOrigin, newDestination, { silent: false, fitBounds: false });
     });
   }
