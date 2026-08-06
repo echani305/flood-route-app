@@ -512,11 +512,15 @@ function updateSafeSwitchBanner() {
   });
 }
 
-/** 지금 선택된 경로의 거리/시간/위험도를 시트에 한 줄로 표시 */
+/** 지금 선택된 경로의 거리/시간/위험도를 시트에 큼직하게 표시 */
 function updateRouteInfoLine(route) {
   const el = document.getElementById('routeInfoLine');
   if (!route) { el.innerHTML = ''; return; }
-  el.innerHTML = `<span><b>${(route.distance / 1000).toFixed(1)}km</b></span><span><b>${Math.round(route.duration / 60)}분</b> 예상</span><span>위험도 <b>${(route.riskScore * 100).toFixed(0)}%</b></span>`;
+  el.innerHTML = `
+    <div class="stat"><span class="value">${(route.distance / 1000).toFixed(1)}km</span><span class="label">거리</span></div>
+    <div class="stat"><span class="value">${Math.round(route.duration / 60)}분</span><span class="label">예상 시간</span></div>
+    <div class="stat risk"><span class="value">${(route.riskScore * 100).toFixed(0)}%</span><span class="label">위험도</span></div>
+  `;
 }
 
 /** index번째 경로를 "선택됨"으로 표시: 카드 순서/라벨은 안 바뀌고 하이라이트만 이동, 지도엔 이 경로만 그림 */

@@ -221,14 +221,14 @@
 
   #routeInfoLine {
     display: flex;
-    gap: 10px;
-    font-size: 13px;
-    color: #444;
-    padding: 10px 0;
+    padding: 18px 0;
     border-top: 1px solid #f0f0f0;
     margin-bottom: 4px;
   }
-  #routeInfoLine b { color: #1e3a5f; }
+  #routeInfoLine .stat { flex: 1; text-align: center; }
+  #routeInfoLine .stat .value { display: block; font-size: 28px; font-weight: bold; color: #1e3a5f; line-height: 1.2; }
+  #routeInfoLine .stat .label { display: block; font-size: 13px; color: #888; margin-top: 4px; }
+  #routeInfoLine .stat.risk .value { color: #e76f51; }
 
   .safe-switch-banner {
     display: none;
