@@ -101,6 +101,18 @@
     padding: 8px 16px 20px;
   }
 
+  #sheetInputSection {
+    overflow: hidden;
+    max-height: 600px;
+    transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.25s ease;
+  }
+  #sheetInputSection.collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin: 0;
+    pointer-events: none;
+  }
+
   .field { margin-bottom: 12px; position: relative; }
   .field label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
   .field input {

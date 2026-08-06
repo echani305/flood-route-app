@@ -68,22 +68,25 @@ function endSheetDrag(e) {
 sheetHandleEl.addEventListener('pointerup', endSheetDrag);
 sheetHandleEl.addEventListener('pointercancel', endSheetDrag);
 
-/** 검색 성공 후: 출발지/도착지 입력은 요약 형태로 위로 올리고, 결과 영역을 보여줌 */
+/** 검색 성공 후: 출발지/도착지 입력은 접어서 요약 형태로 보여주고, 결과 영역을 보여줌 */
 function showResultsView(originLabel, destLabel) {
-  sheetInputSection.style.display = 'none';
+  sheetInputSection.classList.add('collapsed');
   sheetResultsSection.style.display = 'block';
   sheetSummaryEl.classList.add('show');
   routeSummaryTextEl.textContent = `${originLabel} → ${destLabel}`;
+  editRouteBtn.textContent = '수정';
 }
 
-/** "수정" 버튼: 다시 출발지/도착지 입력 화면으로 돌아감 */
-function showInputView() {
-  sheetInputSection.style.display = 'block';
-  sheetResultsSection.style.display = 'none';
-  sheetSummaryEl.classList.remove('show');
-  setSheetHeight(sheetMidHeight());
+/** 요약 바의 "수정" 버튼: 입력창을 펼쳤다 접었다 토글 (결과는 그대로 아래에 남아있음) */
+function toggleInputSection() {
+  const collapsed = sheetInputSection.classList.toggle('collapsed');
+  editRouteBtn.textContent = collapsed ? '수정' : '닫기';
+  if (!collapsed) {
+    setSheetHeight(sheetFullHeight());
+    document.getElementById('originInput').focus();
+  }
 }
-editRouteBtn.addEventListener('click', showInputView);
+editRouteBtn.addEventListener('click', toggleInputSection);
 
 const geocoder = new kakao.maps.services.Geocoder();
 const places = new kakao.maps.services.Places();
