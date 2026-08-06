@@ -282,8 +282,7 @@ app.get('/api/air-quality', async (req, res) => {
 });
 
 /**
- * 안전 경로 추천
- * GET /api/route?originLat=&originLng=&destLat=&destLng=&mode=car|walk|bicycle|transit
+ * 안전 경로 추천: GET /api/route?originLat=&originLng=&destLat=&destLng=&mode=car|walk|bicycle|transit
  */
 app.get('/api/route', async (req, res) => {
   try {
@@ -297,7 +296,7 @@ app.get('/api/route', async (req, res) => {
     const origin = { lat: parseFloat(originLat), lng: parseFloat(originLng) };
     const destination = { lat: parseFloat(destLat), lng: parseFloat(destLng) };
 
-    // 1) 현재 강수 위험도 (폭우 시나리오 켜져 있으면 강제값 사용)
+    // 강수 위험도 (폭우 시나리오면 강제값)
     let rainfallRisk = 0;
     if (forcedRainfallRisk !== null) {
       rainfallRisk = forcedRainfallRisk;
@@ -310,21 +309,13 @@ app.get('/api/route', async (req, res) => {
       }
     }
 
-    // 2) 선택한 이동수단으로 경로 후보 조회 (자동차는 대안 경로 포함, 도보/자전거/대중교통은 단일 경로)
     const routes = await kakaoRoute.getRoutes(mode, origin, destination);
     if (routes.length === 0) {
       return res.status(404).json({ error: `${mode} 경로를 찾을 수 없습니다.` });
     }
 
-    // 3) 위험도 기준으로 경로 랭킹
     const ranked = riskEngine.rankRoutes(routes, rainfallRisk);
-
-    res.json({
-      mode,
-      rainfallRisk,
-      recommended: ranked[0],
-      alternatives: ranked.slice(1),
-    });
+    res.json({ mode, rainfallRisk, recommended: ranked[0], alternatives: ranked.slice(1) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -332,6 +323,7 @@ app.get('/api/route', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+// HACK@THON 26 배포 환경은 0.0.0.0 리슨 필수 (127.0.0.1이면 빌드는 성공해도 접속 안 됨)
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`대전 안전 길 안내 서버 실행 중: http://localhost:${PORT}`);
 });

@@ -1,18 +1,9 @@
 /**
- * ⚠️ HISTORICAL_FLOOD_POINTS / ROAD_CONTROL_ZONES는 아직 데모/개발용 예시 좌표입니다.
- * 실서비스에서는 다음 실제 API 응답으로 교체하세요:
- *  - HISTORICAL_FLOOD_POINTS      <-  행안부 침수흔적도 API (공간데이터)
- *  - ROAD_CONTROL_ZONES           <-  국토교통부 재난상황정보 API (실시간 통제 구간)
- *
- * RIVER_MONITOR_POINTS.level 은 더 이상 데모 값이 아니라, services/riverService.js가
- * HRFCO(한강홍수통제소) 오픈API의 실제 수위를 가져와 updateRiverLevels()로 갱신합니다.
- * (초기값은 API 응답이 오기 전 잠깐 쓰이는 안전한 기본값일 뿐입니다.)
+ * ⚠️ HISTORICAL_FLOOD_POINTS/ROAD_CONTROL_ZONES는 아직 데모 좌표 (실서비스: 침수흔적도/재난상황정보 API로 교체).
+ * RIVER_MONITOR_POINTS.level은 riverService.js가 HRFCO 실시간 수위로 갱신함(초기값은 임시 기본값).
  */
 
-// 대전 주요 하천 관측 지점 (실제 HRFCO 수위관측소와 매칭됨 — services/riverService.js 참고)
-// lat/lng: 실제 관측소 좌표. level: 초기 기본값(서버 시작 직후 API 응답 오기 전까지만 사용).
-// roadSegment: 이 지점 근처의 "위험 도로 구간"을 표시하기 위해 자동차 길찾기 API로 실제
-//    도로 경로를 조회할 때 쓰는 시작/끝 좌표. (지점을 관통하도록 남북으로 약 700m 간격을 둠)
+// 대전 주요 하천 관측 지점 (실제 HRFCO 수위관측소 매칭). roadSegment: 위험구간을 실제 도로로 표시할 때 쓰는 남북 700m 구간
 const RIVER_MONITOR_POINTS = [
   {
     name: '갑천-정림', lat: 36.3517, lng: 127.3497, level: 0.3,
@@ -36,11 +27,7 @@ const RIVER_MONITOR_POINTS = [
   },
 ];
 
-/**
- * riverService.getLiveRiverLevels()의 결과로 RIVER_MONITOR_POINTS[i].level을 갱신.
- * level이 null인 항목(조회 실패/기준수위 정보 없음)은 건드리지 않고 기존 값을 유지함
- * — "데이터를 못 받았다"를 "안전하다(0)"로 잘못 표시하지 않기 위함.
- */
+/** liveData로 RIVER_MONITOR_POINTS[i].level 갱신. level이 null(조회 실패)이면 기존값 유지 (없다고 "안전"으로 오판 방지) */
 function updateRiverLevels(liveData) {
   if (!Array.isArray(liveData)) return;
   for (const live of liveData) {
@@ -98,11 +85,9 @@ function angleDiff(a, b) {
 }
 
 /**
- * 경로(path)에서 방향이 거의 반대로 꺾이는 지점(유턴)을 찾는다.
- * - 카카오 API의 guides(안내 문구) 데이터에 의존하지 않고, 우리가 이미 갖고 있는 좌표(path)만으로
- *   기하학적으로 판단한다: 각 지점 앞뒤로 약 15m 떨어진 지점과 비교해 진입 방위각과 진출 방위각의
- *   차이가 150도 이상이면 유턴으로 본다.
- * - 실제 유턴 구간은 곡선이라 후보가 여러 개 연달아 잡히므로, 30m 이내로 가까운 후보는 하나로 묶는다.
+ * 경로 좌표만으로 유턴 지점 탐지 (카카오 guides 데이터 불필요): 앞뒤 15m 지점의 방위각 차이가
+ * 150도 이상이면 후보로 보되, 실제로 위치도 가까워야(=제자리 회전) 진짜 유턴으로 인정한다.
+ * (그냥 각도만 보면 "우회전 후 바로 또 회전" 같은 경우도 유턴으로 오탐될 수 있어서 이 조건이 필요함)
  */
 function detectUTurns(path) {
   const LOOKAROUND_M = 15;
@@ -137,9 +122,7 @@ function detectUTurns(path) {
     const outBearing = bearingBetween(path[i], after);
     if (angleDiff(inBearing, outBearing) < U_TURN_ANGLE_DEG) continue;
 
-    // 방향은 반대로 꺾였어도, 다른 도로로 갈아타면서 실제 위치가 멀어진 거면 유턴이 아니라
-    // "연속된 두 번의 회전"일 뿐이다 (예: 우회전 후 바로 또 회전). 앞뒤 지점이 실제로도
-    // 가까운 경우만 진짜 유턴으로 인정한다.
+    // 각도만으론 "우회전 후 바로 또 회전"도 유턴처럼 보일 수 있어, 실제 위치도 가까운 경우만 인정
     if (haversineMeters(before, after) > NET_DISPLACEMENT_MAX_M) continue;
 
     candidates.push(path[i]);

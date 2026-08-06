@@ -81,17 +81,12 @@ setSheetHeight(sheetPeekHeight(), false);
 const geocoder = new kakao.maps.services.Geocoder();
 const places = new kakao.maps.services.Places();
 
-// ---------- 장소 검색 결과를 "내 위치에서 가까운 순"으로 정렬하기 위한 기준 좌표 ----------
-// 프랜차이즈(맥도날드 등)처럼 전국에 여러 곳이 있는 키워드를 검색하면 카카오 기본 정렬(정확도순)은
-// 지역과 상관없이 아무 지점이나 잡을 수 있어서, 위치 기준 정렬(sort: DISTANCE)을 쓰기 위해 필요함.
-// 처음엔 대전 중심 좌표로 시작했다가, GPS 위치를 받아오면 그걸로 갱신한다(실패하면 대전 중심 유지).
+// ---------- 장소 검색을 "가까운 순"으로 정렬하기 위한 기준 좌표 (GPS 있으면 갱신, 없으면 대전 중심) ----------
 let searchBiasLocation = new kakao.maps.LatLng(DAEJEON_CENTER.lat, DAEJEON_CENTER.lng);
 if (navigator.geolocation) {
   navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      searchBiasLocation = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
-    },
-    () => {}, // 권한 거부/실패 시: 그냥 대전 중심 기준으로 계속 검색
+    (pos) => { searchBiasLocation = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude); },
+    () => {},
     { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 8000 }
   );
 }
@@ -139,7 +134,7 @@ function attachInfoOverlay(circle, position, html) {
   });
 }
 
-// ---------- 위험구간(하천 관측점 / 침수 이력) 지도에 표시 - 실제 도로 경로를 따라 색칠 ----------
+// ---------- 위험구간(하천/침수이력/통제구간) 실제 도로 위에 표시 ----------
 async function loadRiskZones() {
   try {
     const res = await fetch('/api/risk-zones');
@@ -181,7 +176,7 @@ async function loadRiskZones() {
         `<b>과거 침수 이력 도로</b><br/>가중치: ${(p.weight * 100).toFixed(0)}%<br/><span style="color:#999">(클릭하면 닫힘)</span>`);
     });
 
-    // 통제구역: 하천/침수 지점과 동일하게, 실제 도로를 따라 굵은 빨간 선 + "🚧 통제구간" 뱃지로 표시
+    // 통제구역: 굵은 빨간 선 + "🚧" 뱃지
     (data.roadControlZones || []).forEach((z) => {
       const path = (z.roadPath && z.roadPath.length > 1) ? z.roadPath : [z, z];
       const polyline = new kakao.maps.Polyline({
@@ -215,8 +210,7 @@ async function loadRiskZones() {
 }
 loadRiskZones();
 
-// ---------- 위도/경도 -> 기상청 격자좌표(nx, ny) 변환 ----------
-// 기상청 공식 변환식(Lambert Conformal Conic 투영). 위경도를 그대로 못 쓰고 이 계산이 꼭 필요함.
+// ---------- 위경도 -> 기상청 격자좌표(nx,ny) 변환 (LCC 투영 공식) ----------
 function latLngToWeatherGrid(lat, lng) {
   const RE = 6371.00877, GRID = 5.0, SLAT1 = 30.0, SLAT2 = 60.0, OLON = 126.0, OLAT = 38.0, XO = 43, YO = 136;
   const DEGRAD = Math.PI / 180.0;
@@ -306,17 +300,12 @@ async function loadAirQuality() {
 loadTodayWeather();
 setInterval(loadTodayWeather, 30 * 60 * 1000); // 30분마다 갱신
 
-// ---------- 주소 -> 좌표 변환 ----------
+// ---------- 주소 -> 좌표 변환 (장소명 우선, 실패 시 주소 검색) ----------
 function geocodeAddress(query) {
   return new Promise((resolve, reject) => {
-    // 먼저 키워드 장소 검색(건물명, 지명 등)을 시도하고, 실패하면 주소 검색으로 재시도
-    // location + sort:DISTANCE 를 줘서, "맥도날드"처럼 여러 지역에 있는 곳을 검색해도
-    // 내 위치(또는 대전 중심)에서 가장 가까운 지점이 1순위로 나오게 한다.
     places.keywordSearch(query, (data, status) => {
       if (status === kakao.maps.services.Status.OK && data.length > 0) {
-        // sort:DISTANCE는 "이름이 정확한지"보다 "가까운 정도"를 우선하므로, 검색어랑 이름이
-        // 정확히 일치하는 곳이 있으면 그걸 최우선으로 쓰고, 없으면 이름에 포함된 곳,
-        // 그래도 없으면 거리순 1위를 그대로 씀 (자동완성 드롭다운과 동일한 우선순위 규칙)
+        // 정확히 일치 > 이름 포함 > 거리순 1위 순으로 채택 (자동완성과 동일 규칙)
         const best =
           data.find((d) => d.place_name === query) ||
           data.find((d) => d.place_name.includes(query)) ||
@@ -382,11 +371,7 @@ function setupAutocomplete(inputEl, listEl, storeKey) {
       return;
     }
 
-    // 검색을 두 방식으로 동시에 요청해서 합친다:
-    // ① 기본(정확도순, 거리 상관없음) - "대전역"처럼 유일하고 정확한 이름을 놓치지 않기 위함
-    // ② 거리순(내 위치/대전 기준) - "맥도날드"처럼 여러 지점이 있는 경우 가까운 곳을 잡기 위함
-    // 거리순만 쓰면, 이름은 느슨하게 걸리지만 더 가까운 다른 장소들 때문에 정작 찾는 곳이
-    // 후보 목록(상위 10개) 밖으로 밀려날 수 있어서, 정확도순 결과를 같이 봐서 보완한다.
+    // 정확도순 + 거리순 두 검색을 합쳐서, 정확한 이름 매칭을 놓치지 않으면서도 가까운 지점을 우선함
     let accuracyData = null;
     let distanceData = null;
 
@@ -459,9 +444,7 @@ setupAutocomplete(
   'destination'
 );
 
-// ---------- 이동수단 ----------
-// 도보/자전거/대중교통 API는 아직 응답 파싱이 검증 안 돼서, UI에서는 자동차만 사용
-// (백엔드 kakaoRoute.js의 관련 함수들은 남겨뒀으니, 나중에 검증되면 버튼만 다시 추가하면 됨)
+// ---------- 이동수단: 도보/자전거/대중교통 API 미검증이라 자동차만 사용 (백엔드 함수는 유지) ----------
 const selectedMode = 'car';
 
 // ---------- 경로 검색 (재탐색에서도 재사용하는 공통 함수) ----------
@@ -484,13 +467,7 @@ function getAllRoutes() {
   return lastRouteData ? [lastRouteData.recommended, ...lastRouteData.alternatives] : [];
 }
 
-/**
- * 후보(candidates) 중 안전한 걸 찾음. 두 단계로 시도:
- * 1) 전 구간이 완전히 초록(주의 미만)인 것 - 있으면 최우선
- * 2) 그런 게 없으면, 그래도 지금 선택된 경로보다는 덜 위험한 것 중 가장 나은 것
- *    (폭우 극한 모드처럼 출발지 자체가 위험구간 근처면, 완전 초록 대안이 아예 불가능할 수 있어서
- *     이 경우엔 "그나마 더 안전한" 것으로 대체함 - 초록이라고 거짓말은 안 함)
- */
+/** 후보 중 안전한 걸 찾음: 완전 초록(주의 미만) 우선, 없으면 현재보다 덜 위험한 것 중 최선 */
 function findSaferAlternative(current, candidates) {
   if (!candidates || candidates.length === 0) return { route: null, fullyGreen: false };
 
@@ -507,7 +484,7 @@ function findSaferAlternative(current, candidates) {
   return { route: null, fullyGreen: false };
 }
 
-/** 지금 선택되어(지도에 그려져) 있는 경로 기준으로 배너를 다시 계산 */
+/** 지금 선택된 경로 기준으로 "더 안전한 경로로 변경" 배너를 다시 계산 */
 function updateSafeSwitchBanner() {
   const all = getAllRoutes();
   const current = all[selectedRouteIndex];
@@ -518,13 +495,6 @@ function updateSafeSwitchBanner() {
   const { route: safer, fullyGreen } = hasRisk
     ? findSaferAlternative(current, candidates)
     : { route: null, fullyGreen: false };
-
-  // 디버그용: 버튼이 왜 뜨는지/안 뜨는지 콘솔에서 바로 확인 가능하게
-  console.log('[안전경로 버튼 판단]', {
-    현재선택_최고위험도: current.maxRisk,
-    후보_개수: candidates.length,
-    선택된_대안: safer ? { maxRisk: safer.maxRisk, fullyGreen } : null,
-  });
 
   if (!hasRisk || !safer) {
     safeSwitchBanner.classList.remove('show');
@@ -542,10 +512,14 @@ function updateSafeSwitchBanner() {
   });
 }
 
-/**
- * 카드의 순서/라벨("추천"/"대안 경로 N")은 절대 안 바뀜 — index번째 경로를 "선택됨"으로 표시만 바꿈:
- * 지도에는 그 경로 하나만 그리고, 카드 목록에서는 그 카드만 초록(recommended 스타일)이 되고 나머지는 흰색이 됨.
- */
+/** 지금 선택된 경로의 거리/시간/위험도를 시트에 한 줄로 표시 */
+function updateRouteInfoLine(route) {
+  const el = document.getElementById('routeInfoLine');
+  if (!route) { el.innerHTML = ''; return; }
+  el.innerHTML = `<span><b>${(route.distance / 1000).toFixed(1)}km</b></span><span><b>${Math.round(route.duration / 60)}분</b> 예상</span><span>위험도 <b>${(route.riskScore * 100).toFixed(0)}%</b></span>`;
+}
+
+/** index번째 경로를 "선택됨"으로 표시: 카드 순서/라벨은 안 바뀌고 하이라이트만 이동, 지도엔 이 경로만 그림 */
 function selectRoute(index) {
   const all = getAllRoutes();
   const chosen = all[index];
@@ -555,6 +529,7 @@ function selectRoute(index) {
   clearOverlays(routeOverlays);
   lastRoutePath = chosen.path;
   renderRoute(chosen, true, currentOrigin, activeRouteContext.destination);
+  updateRouteInfoLine(chosen);
 
   resultsEl.querySelectorAll('.result-card').forEach((card, i) => {
     card.classList.toggle('recommended', i === index);
@@ -629,9 +604,7 @@ searchBtn.addEventListener('click', async () => {
     return;
   }
 
-  // 출발지/도착지는 반드시 검색 목록(드롭다운)에서 직접 선택해야만 진행됨.
-  // (자동으로 후보를 추측해서 고르게 하면, 이름이 비슷한 다른 장소가 잡히는 경우가 있어
-  //  아예 "목록에서 직접 고르기"를 강제해서 원천적으로 방지함)
+  // 드롭다운에서 직접 선택해야만 진행 (엉뚱한 장소 자동 매칭 방지)
   if (!selectedLocations.origin) {
     statusEl.textContent = '⚠️ 출발지를 아래 목록에서 정확히 선택해주세요.';
     originInput.focus();
@@ -658,6 +631,7 @@ searchBtn.addEventListener('click', async () => {
     if (result) {
       // 상단 검색바를 이번 경로 요약으로 갱신. 오버레이는 안 닫음 - 결과 목록에서 카드를 골라야 닫힘(selectRoute)
       topSearchBar.textContent = `${origin.name || '출발지'} → ${destination.name || '도착지'}`;
+      updateRouteInfoLine(result.recommended);
       setSheetHeight(sheetMidHeight());
     }
   } catch (err) {
@@ -666,8 +640,7 @@ searchBtn.addEventListener('click', async () => {
   }
 });
 
-// ---------- 실시간 추적 & 자동 재탐색 ----------
-// 일반 내비게이션보다 훨씬 자주(15초) 재탐색: 폭우 상황은 하천 수위·통제구간이 빠르게 바뀌기 때문
+// ---------- 실시간 추적 & 자동 재탐색 (15초마다, 하천 수위·통제구간이 빨리 바뀌므로) ----------
 let trackingActive = false;
 let liveWatchId = null;
 let autoRefreshTimer = null;
@@ -786,11 +759,11 @@ trackingBtn.addEventListener('click', () => {
   else startTracking();
 });
 
-// 경로를 통째로 한 색이 아니라, 구간(sampledPoints 인접 구간)마다 그 구간의 위험도 색으로 나눠 그린다.
+// 경로를 구간별(sampledPoints 인접 구간)로 나눠서 위험도 색으로 그림
 function renderRoute(route, isRecommended, origin, destination) {
   const points = route.sampledPoints && route.sampledPoints.length > 1
     ? route.sampledPoints
-    : route.path.map((p) => ({ ...p, risk: route.riskScore })); // 안전장치: 샘플이 없으면 평균 위험도로 단색 처리
+    : route.path.map((p) => ({ ...p, risk: route.riskScore })); // 샘플 없으면 평균 위험도로 단색 처리
 
   for (let i = 0; i < points.length - 1; i++) {
     const segRisk = (points[i].risk + points[i + 1].risk) / 2;
@@ -821,11 +794,11 @@ function renderRoute(route, isRecommended, origin, destination) {
     endMarker.setMap(map);
     routeOverlays.push(startMarker, endMarker);
 
-    // 출발지 마커를 드래그해서 놓으면, 그 위치를 새 출발지로 삼아 경로를 다시 계산한다.
+    // 마커 드래그하면 그 위치로 재검색
     kakao.maps.event.addListener(startMarker, 'dragend', () => {
       const pos = startMarker.getPosition();
       const newOrigin = { lat: pos.getLat(), lng: pos.getLng() };
-      if (trackingActive) stopTracking(); // 실시간 추적 중이면 다음 GPS 갱신에 덮어써지니 꺼준다
+      if (trackingActive) stopTracking();
       currentOrigin = newOrigin;
       selectedLocations.origin = newOrigin;
       document.getElementById('originInput').value = '(지도에서 직접 지정한 위치)';
@@ -833,7 +806,6 @@ function renderRoute(route, isRecommended, origin, destination) {
       fetchAndRenderRoute(newOrigin, activeRouteContext.destination, { silent: false, fitBounds: false });
     });
 
-    // 도착지 마커를 드래그해서 놓으면, 그 위치를 새 도착지로 삼아 경로를 다시 계산한다.
     kakao.maps.event.addListener(endMarker, 'dragend', () => {
       const pos = endMarker.getPosition();
       const newDestination = { lat: pos.getLat(), lng: pos.getLng() };
@@ -845,7 +817,7 @@ function renderRoute(route, isRecommended, origin, destination) {
     });
   }
 
-  // 추천 경로에서 감지된 유턴 지점에 "↩ 유턴" 뱃지 표시 (선 하나로는 헷갈릴 수 있어서)
+  // 유턴 지점에 "↩ 유턴" 뱃지 표시
   if (isRecommended && route.uTurns && route.uTurns.length > 0) {
     route.uTurns.forEach((u) => {
       const content = document.createElement('div');
@@ -885,7 +857,7 @@ function renderResultCards(recommended, alternatives) {
     </div>
   `).join('');
 
-  // 카드는 몇 번째든(추천 카드 포함) 탭하면 그 경로가 선택됨 - 라벨/순서는 안 바뀌고 하이라이트만 바뀜
+  // 카드 탭하면(추천 포함) 그 경로가 선택됨
   resultsEl.querySelectorAll('.result-card').forEach((card, i) => {
     card.addEventListener('click', () => selectRoute(i));
   });
