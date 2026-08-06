@@ -488,11 +488,38 @@ function renderRoute(route, isRecommended, origin, destination) {
   }
 
   if (isRecommended && origin && destination) {
-    const startMarker = new kakao.maps.Marker({ position: new kakao.maps.LatLng(origin.lat, origin.lng) });
-    const endMarker = new kakao.maps.Marker({ position: new kakao.maps.LatLng(destination.lat, destination.lng) });
+    const startMarker = new kakao.maps.Marker({
+      position: new kakao.maps.LatLng(origin.lat, origin.lng),
+      draggable: true,
+    });
+    const endMarker = new kakao.maps.Marker({
+      position: new kakao.maps.LatLng(destination.lat, destination.lng),
+      draggable: true,
+    });
     startMarker.setMap(map);
     endMarker.setMap(map);
     routeOverlays.push(startMarker, endMarker);
+
+    // 출발지 마커를 드래그해서 놓으면, 그 위치를 새 출발지로 삼아 경로를 다시 계산한다.
+    kakao.maps.event.addListener(startMarker, 'dragend', () => {
+      const pos = startMarker.getPosition();
+      const newOrigin = { lat: pos.getLat(), lng: pos.getLng() };
+      if (trackingActive) stopTracking(); // 실시간 추적 중이면 다음 GPS 갱신에 덮어써지니 꺼준다
+      currentOrigin = newOrigin;
+      selectedLocations.origin = newOrigin;
+      document.getElementById('originInput').value = '(지도에서 직접 지정한 위치)';
+      fetchAndRenderRoute(newOrigin, activeRouteContext.destination, { silent: false, fitBounds: false });
+    });
+
+    // 도착지 마커를 드래그해서 놓으면, 그 위치를 새 도착지로 삼아 경로를 다시 계산한다.
+    kakao.maps.event.addListener(endMarker, 'dragend', () => {
+      const pos = endMarker.getPosition();
+      const newDestination = { lat: pos.getLat(), lng: pos.getLng() };
+      activeRouteContext = { ...activeRouteContext, destination: newDestination };
+      selectedLocations.destination = newDestination;
+      document.getElementById('destInput').value = '(지도에서 직접 지정한 위치)';
+      fetchAndRenderRoute(currentOrigin, newDestination, { silent: false, fitBounds: false });
+    });
   }
 
   // 추천 경로에서 감지된 유턴 지점에 "↩ 유턴" 뱃지 표시 (선 하나로는 헷갈릴 수 있어서)
