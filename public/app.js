@@ -6,28 +6,84 @@ const map = new kakao.maps.Map(document.getElementById('map'), {
   level: 6,
 });
 
-// ---------- 모바일: 검색 패널 접기/펼치기 ----------
-const sidebarEl = document.getElementById('sidebar');
-const sidebarToggleBtn = document.getElementById('sidebarToggle');
-const sidebarToggleIcon = document.getElementById('sidebarToggleIcon');
-const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
+// ---------- 바텀 시트: 드래그로 접었다 펼쳤다 (핸들 바를 위아래로 끌기) ----------
+const sheetEl = document.getElementById('sheet');
+const sheetHandleEl = document.getElementById('sheetHandle');
+const sheetSummaryEl = document.getElementById('sheetSummary');
+const routeSummaryTextEl = document.getElementById('routeSummaryText');
+const editRouteBtn = document.getElementById('editRouteBtn');
+const sheetInputSection = document.getElementById('sheetInputSection');
+const sheetResultsSection = document.getElementById('sheetResultsSection');
 
-function setSidebarCollapsed(collapsed) {
-  sidebarEl.classList.toggle('collapsed', collapsed);
-  sidebarToggleBtn.textContent = ''; // 아이콘/텍스트 다시 구성
-  const label = document.createElement('span');
-  label.textContent = collapsed ? '검색창 펼치기 ' : '🗺️ 지도 크게 보기 ';
-  sidebarToggleBtn.appendChild(label);
-  const icon = document.createElement('span');
-  icon.textContent = collapsed ? '▸' : '▾';
-  sidebarToggleBtn.appendChild(icon);
-  // 컨테이너 크기가 바뀌면 카카오맵이 스스로 다시 그리지 못하는 경우가 있어 relayout으로 강제 갱신
-  setTimeout(() => map.relayout(), 260);
+const SHEET_PEEK = 88; // 핸들만 겨우 보이는 높이(px)
+const sheetMidHeight = () => Math.round(window.innerHeight * 0.46);
+const sheetFullHeight = () => Math.round(window.innerHeight * 0.85);
+
+function setSheetHeight(px, animate = true) {
+  sheetEl.classList.toggle('dragging', !animate);
+  sheetEl.style.height = `${px}px`;
+  if (!animate) {
+    // 강제 리플로우 후 다시 애니메이션 켤 수 있게(연속 드래그 대비)
+    void sheetEl.offsetHeight;
+  }
+  setTimeout(() => map.relayout(), animate ? 300 : 0);
 }
 
-sidebarToggleBtn.addEventListener('click', () => {
-  setSidebarCollapsed(!sidebarEl.classList.contains('collapsed'));
+let dragStartY = 0;
+let dragStartHeight = 0;
+let dragging = false;
+
+sheetHandleEl.addEventListener('pointerdown', (e) => {
+  dragging = true;
+  dragStartY = e.clientY;
+  dragStartHeight = sheetEl.getBoundingClientRect().height;
+  sheetEl.classList.add('dragging');
+  sheetHandleEl.setPointerCapture(e.pointerId);
 });
+
+sheetHandleEl.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const delta = dragStartY - e.clientY; // 위로 끌면 양수
+  const newHeight = Math.min(sheetFullHeight(), Math.max(SHEET_PEEK, dragStartHeight + delta));
+  sheetEl.style.height = `${newHeight}px`;
+});
+
+function endSheetDrag(e) {
+  if (!dragging) return;
+  dragging = false;
+  sheetEl.classList.remove('dragging');
+  const movedY = Math.abs(dragStartY - (e.clientY ?? dragStartY));
+  const h = sheetEl.getBoundingClientRect().height;
+
+  let target;
+  if (movedY < 6) {
+    // 드래그가 거의 없었으면 탭으로 간주 -> 접힌 상태면 펼치고, 펼쳐져 있으면 접기
+    target = h <= SHEET_PEEK + 20 ? sheetMidHeight() : SHEET_PEEK;
+  } else {
+    const snaps = [SHEET_PEEK, sheetMidHeight(), sheetFullHeight()];
+    target = snaps.reduce((a, b) => (Math.abs(b - h) < Math.abs(a - h) ? b : a));
+  }
+  setSheetHeight(target);
+}
+sheetHandleEl.addEventListener('pointerup', endSheetDrag);
+sheetHandleEl.addEventListener('pointercancel', endSheetDrag);
+
+/** 검색 성공 후: 출발지/도착지 입력은 요약 형태로 위로 올리고, 결과 영역을 보여줌 */
+function showResultsView(originLabel, destLabel) {
+  sheetInputSection.style.display = 'none';
+  sheetResultsSection.style.display = 'block';
+  sheetSummaryEl.classList.add('show');
+  routeSummaryTextEl.textContent = `${originLabel} → ${destLabel}`;
+}
+
+/** "수정" 버튼: 다시 출발지/도착지 입력 화면으로 돌아감 */
+function showInputView() {
+  sheetInputSection.style.display = 'block';
+  sheetResultsSection.style.display = 'none';
+  sheetSummaryEl.classList.remove('show');
+  setSheetHeight(sheetMidHeight());
+}
+editRouteBtn.addEventListener('click', showInputView);
 
 const geocoder = new kakao.maps.services.Geocoder();
 const places = new kakao.maps.services.Places();
@@ -492,7 +548,10 @@ searchBtn.addEventListener('click', async () => {
     console.log('[선택된 위치] 출발지:', origin, ' / 도착지:', destination);
     currentOrigin = origin;
     const result = await fetchAndRenderRoute(origin, destination, { silent: false, fitBounds: true });
-    if (result && isMobile()) setSidebarCollapsed(true); // 모바일에서는 경로 찾으면 자동으로 접어서 지도를 크게 보여줌
+    if (result) {
+      showResultsView(origin.name || '출발지', destination.name || '도착지');
+      setSheetHeight(sheetMidHeight());
+    }
   } catch (err) {
     console.error(err);
     statusEl.textContent = `오류: ${err.message}`;
@@ -662,6 +721,7 @@ function renderRoute(route, isRecommended, origin, destination) {
       currentOrigin = newOrigin;
       selectedLocations.origin = newOrigin;
       document.getElementById('originInput').value = '(지도에서 직접 지정한 위치)';
+      routeSummaryTextEl.textContent = `(지도에서 지정한 위치) → ${document.getElementById('destInput').value}`;
       fetchAndRenderRoute(newOrigin, activeRouteContext.destination, { silent: false, fitBounds: false });
     });
 
@@ -672,6 +732,7 @@ function renderRoute(route, isRecommended, origin, destination) {
       activeRouteContext = { ...activeRouteContext, destination: newDestination };
       selectedLocations.destination = newDestination;
       document.getElementById('destInput').value = '(지도에서 직접 지정한 위치)';
+      routeSummaryTextEl.textContent = `${document.getElementById('originInput').value} → (지도에서 지정한 위치)`;
       fetchAndRenderRoute(currentOrigin, newDestination, { silent: false, fitBounds: false });
     });
   }

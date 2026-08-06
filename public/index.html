@@ -2,79 +2,103 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>대전 안전 길 안내 시스템</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: "Pretendard", "Malgun Gothic", sans-serif; background: #f4f6f8; }
-
-  header {
-    background: #1e3a5f;
-    color: white;
-    padding: 14px 20px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden; /* 페이지 자체는 안 스크롤되고, 지도랑 시트 안쪽만 스크롤/조작됨 */
+    font-family: "Pretendard", "Malgun Gothic", sans-serif;
+    background: #f4f6f8;
   }
-  header h1 { font-size: 18px; margin: 0; }
-  header .badge {
-    font-size: 12px;
-    background: #ffb703;
-    color: #1e3a5f;
-    padding: 2px 8px;
+
+  #map { position: fixed; inset: 0; }
+
+  /* ---------- 지도 위 범례 오버레이 ---------- */
+  .legend-overlay {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top));
+    right: 12px;
+    z-index: 15;
+    background: rgba(255,255,255,0.94);
+    backdrop-filter: blur(6px);
     border-radius: 10px;
-    font-weight: bold;
+    padding: 8px 10px;
+    font-size: 11px;
+    color: #444;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.15);
   }
+  .legend-item { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; white-space: nowrap; }
+  .legend-item:last-child { margin-bottom: 0; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-  #layout {
-    display: flex;
-    flex-wrap: wrap; /* 뷰포트가 좁으면(웹뷰가 화면 너비를 잘못 알려주는 경우 대비) 지도가 자동으로 아래 줄로 내려감 */
-    height: calc(100vh - 54px);
-  }
-
-  #sidebar {
-    width: 340px;
-    max-width: 100%;
-    flex: 1 1 340px;
-    padding: 16px;
+  /* ---------- 바텀 시트 ---------- */
+  #sheet {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 20;
     background: white;
-    box-shadow: 2px 0 6px rgba(0,0,0,0.06);
-    overflow-y: auto;
-    z-index: 5;
+    border-radius: 18px 18px 0 0;
+    box-shadow: 0 -4px 24px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+    height: 46vh;
+    max-height: 88vh;
+    transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    padding-bottom: env(safe-area-inset-bottom);
   }
+  #sheet.dragging { transition: none; }
 
-  #sidebarToggle { display: none; }
+  #sheetHandle {
+    padding: 10px 0 8px;
+    display: flex;
+    justify-content: center;
+    cursor: grab;
+    touch-action: none;
+    flex-shrink: 0;
+  }
+  #sheetHandle .bar { width: 40px; height: 5px; border-radius: 3px; background: #d8dce0; }
 
-  #map { flex: 3 1 320px; min-height: 320px; }
+  #sheetSummary {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 0 16px 12px;
+    border-bottom: 1px solid #eee;
+    flex-shrink: 0;
+  }
+  #sheetSummary.show { display: flex; }
+  #sheetSummary .route-text {
+    font-size: 14px;
+    font-weight: bold;
+    color: #1e3a5f;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #editRouteBtn {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    border: 1px solid #1e3a5f;
+    color: #1e3a5f;
+    background: white;
+    border-radius: 14px;
+    font-size: 12px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  #editRouteBtn:hover { background: #f4f6f8; }
 
-  /* 모바일: 좌우 배치 대신 위아래로 쌓고, 검색 패널은 접고 펼 수 있게 */
-  @media (max-width: 768px) {
-    #layout { flex-direction: column; }
-    #sidebar {
-      width: 100%;
-      max-height: 60vh;
-      padding: 0;
-      transition: max-height 0.25s ease;
-      flex-shrink: 0;
-    }
-    #sidebar.collapsed { max-height: 44px; overflow: hidden; }
-    #sidebarContent { padding: 12px 16px 16px; }
-    #sidebarToggle {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      width: 100%;
-      padding: 11px;
-      background: #eef1f4;
-      border: none;
-      border-bottom: 1px solid #e2e2e2;
-      font-size: 13px;
-      font-weight: bold;
-      color: #1e3a5f;
-      cursor: pointer;
-    }
-    #map { flex: 1; min-height: 35vh; }
+  #status { font-size: 12px; color: #888; padding: 10px 16px 0; flex-shrink: 0; min-height: 16px; }
+
+  #sheetBody {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px 16px 20px;
   }
 
   .field { margin-bottom: 12px; position: relative; }
@@ -115,11 +139,11 @@
 
   #searchBtn {
     width: 100%;
-    padding: 10px;
+    padding: 12px;
     background: #1e3a5f;
     color: white;
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     font-size: 15px;
     font-weight: bold;
     cursor: pointer;
@@ -134,17 +158,15 @@
     background: white;
     color: #1e3a5f;
     border: 1px solid #1e3a5f;
-    border-radius: 6px;
+    border-radius: 8px;
     font-size: 13px;
     font-weight: bold;
     cursor: pointer;
-    margin-top: 8px;
+    margin-bottom: 10px;
   }
   #trackingBtn:hover { background: #f4f6f8; }
   #trackingBtn.active { background: #1e88e5; border-color: #1e88e5; color: white; }
-  #trackingStatus { font-size: 12px; color: #1e88e5; margin-top: 6px; min-height: 16px; }
-
-  #status { font-size: 13px; color: #888; margin-top: 8px; min-height: 18px; }
+  #trackingStatus { font-size: 12px; color: #1e88e5; margin-bottom: 10px; min-height: 16px; }
 
   .safe-switch-banner {
     display: none;
@@ -178,6 +200,7 @@
     border-radius: 8px;
     border: 1px solid #e2e2e2;
   }
+  .result-card:first-child { margin-top: 0; }
   .result-card.recommended { border-color: #2a9d8f; background: #f0fbf9; }
   .result-card h3 { margin: 0 0 6px; font-size: 14px; }
   .result-card .meta { font-size: 12px; color: #666; }
@@ -189,57 +212,50 @@
     overflow: hidden;
   }
   .risk-bar-fill { height: 100%; }
-
-  .legend {
-    margin-top: 20px;
-    font-size: 12px;
-    color: #555;
-    border-top: 1px solid #eee;
-    padding-top: 12px;
-  }
-  .legend-item { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>대전 안전 길 안내 시스템</h1>
-  <span class="badge">해커톤 데모</span>
-</header>
+<div id="map"></div>
 
-<div id="layout">
-  <div id="sidebar">
-    <button id="sidebarToggle" type="button">🗺️ 지도 크게 보기 <span id="sidebarToggleIcon">▾</span></button>
-    <div id="sidebarContent">
-    <div class="field">
-      <label for="originInput">출발지</label>
-      <input id="originInput" type="text" placeholder="예: 대전역" autocomplete="off" />
-      <div id="originSuggestions" class="suggestions"></div>
+<div class="legend-overlay">
+  <div class="legend-item"><span class="legend-dot" style="background:#2a9d8f"></span> 안전</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#f4a261"></span> 주의</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#e63946"></span> 위험/통제</div>
+</div>
+
+<div id="sheet">
+  <div id="sheetHandle"><span class="bar"></span></div>
+
+  <div id="sheetSummary">
+    <div class="route-text" id="routeSummaryText"></div>
+    <button id="editRouteBtn" type="button">수정</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="sheetBody">
+    <div id="sheetInputSection">
+      <div class="field">
+        <label for="originInput">출발지</label>
+        <input id="originInput" type="text" placeholder="예: 대전역" autocomplete="off" />
+        <div id="originSuggestions" class="suggestions"></div>
+      </div>
+      <div class="field">
+        <label for="destInput">도착지</label>
+        <input id="destInput" type="text" placeholder="예: 대전시청" autocomplete="off" />
+        <div id="destSuggestions" class="suggestions"></div>
+      </div>
+      <button id="searchBtn">안전 경로 찾기</button>
     </div>
-    <div class="field">
-      <label for="destInput">도착지</label>
-      <input id="destInput" type="text" placeholder="예: 대전시청" autocomplete="off" />
-      <div id="destSuggestions" class="suggestions"></div>
-    </div>
-    <button id="searchBtn">안전 경로 찾기</button>
-    <button id="trackingBtn" type="button">🛰 실시간 추적 시작</button>
-    <div id="trackingStatus"></div>
-    <div id="status"></div>
 
-    <div id="safeSwitchBanner" class="safe-switch-banner"></div>
-
-    <div id="results"></div>
-
-    <div class="legend">
-      <div class="legend-item"><span class="legend-dot" style="background:#2a9d8f"></span> 안전 (권장 경로)</div>
-      <div class="legend-item"><span class="legend-dot" style="background:#f4a261"></span> 주의</div>
-      <div class="legend-item"><span class="legend-dot" style="background:#e63946"></span> 위험 / 통제 구간</div>
-      <div style="margin-top:8px; font-size:12px; color:#888;">💡 지도 위 출발지·도착지 마커를 드래그하면 그 자리로 경로가 다시 계산돼요.</div>
-    </div>
+    <div id="sheetResultsSection" style="display:none;">
+      <button id="trackingBtn" type="button">🛰 실시간 추적 시작</button>
+      <div id="trackingStatus"></div>
+      <div id="safeSwitchBanner" class="safe-switch-banner"></div>
+      <div id="results"></div>
     </div>
   </div>
-  <div id="map"></div>
 </div>
 
 <!-- ⚠️ KAKAO_JS_KEY_HERE 를 developers.kakao.com 에서 발급받은 JavaScript 키로 교체하세요 -->
