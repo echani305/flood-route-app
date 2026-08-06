@@ -145,7 +145,14 @@ function geocodeAddress(query) {
     // 내 위치(또는 대전 중심)에서 가장 가까운 지점이 1순위로 나오게 한다.
     places.keywordSearch(query, (data, status) => {
       if (status === kakao.maps.services.Status.OK && data.length > 0) {
-        resolve({ lat: parseFloat(data[0].y), lng: parseFloat(data[0].x), name: data[0].place_name });
+        // sort:DISTANCE는 "이름이 정확한지"보다 "가까운 정도"를 우선하므로, 검색어랑 이름이
+        // 정확히 일치하는 곳이 있으면 그걸 최우선으로 쓰고, 없으면 이름에 포함된 곳,
+        // 그래도 없으면 거리순 1위를 그대로 씀 (자동완성 드롭다운과 동일한 우선순위 규칙)
+        const best =
+          data.find((d) => d.place_name === query) ||
+          data.find((d) => d.place_name.includes(query)) ||
+          data[0];
+        resolve({ lat: parseFloat(best.y), lng: parseFloat(best.x), name: best.place_name });
         return;
       }
       geocoder.addressSearch(query, (result, addrStatus) => {
@@ -205,19 +212,52 @@ function setupAutocomplete(inputEl, listEl, storeKey) {
       closeSuggestions();
       return;
     }
-    // 넉넉하게 받아온 뒤, 주소가 아니라 "장소 이름"에 검색어가 포함된 결과를 우선으로 재정렬
-    places.keywordSearch(trimmed, (data, status) => {
-      if (status !== kakao.maps.services.Status.OK || data.length === 0) {
+
+    // 검색을 두 방식으로 동시에 요청해서 합친다:
+    // ① 기본(정확도순, 거리 상관없음) - "대전역"처럼 유일하고 정확한 이름을 놓치지 않기 위함
+    // ② 거리순(내 위치/대전 기준) - "맥도날드"처럼 여러 지점이 있는 경우 가까운 곳을 잡기 위함
+    // 거리순만 쓰면, 이름은 느슨하게 걸리지만 더 가까운 다른 장소들 때문에 정작 찾는 곳이
+    // 후보 목록(상위 10개) 밖으로 밀려날 수 있어서, 정확도순 결과를 같이 봐서 보완한다.
+    let accuracyData = null;
+    let distanceData = null;
+
+    function tryRender() {
+      if (accuracyData === null || distanceData === null) return; // 둘 다 응답 와야 합침
+
+      const seen = new Set();
+      const nameMatched = [];
+      const distanceRest = [];
+
+      for (const item of accuracyData) {
+        const key = `${item.x},${item.y}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (item.place_name.includes(trimmed)) nameMatched.push(item);
+      }
+      for (const item of distanceData) {
+        const key = `${item.x},${item.y}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (item.place_name.includes(trimmed)) nameMatched.push(item);
+        else distanceRest.push(item);
+      }
+
+      const merged = [...nameMatched, ...distanceRest];
+      if (merged.length === 0) {
         closeSuggestions();
         return;
       }
-      const sorted = [...data].sort((a, b) => {
-        const aNameMatch = a.place_name.includes(trimmed) ? 0 : 1;
-        const bNameMatch = b.place_name.includes(trimmed) ? 0 : 1;
-        if (aNameMatch !== bNameMatch) return aNameMatch - bNameMatch;
-        return 0; // 이름 매칭 여부가 같으면 카카오가 정렬해준 거리순 순서 유지
-      });
-      renderSuggestions(sorted.slice(0, 6));
+      renderSuggestions(merged.slice(0, 6));
+    }
+
+    places.keywordSearch(trimmed, (data, status) => {
+      accuracyData = status === kakao.maps.services.Status.OK ? data : [];
+      tryRender();
+    });
+
+    places.keywordSearch(trimmed, (data, status) => {
+      distanceData = status === kakao.maps.services.Status.OK ? data : [];
+      tryRender();
     }, {
       size: 10,
       location: searchBiasLocation,
@@ -319,11 +359,29 @@ async function fetchAndRenderRoute(origin, destination, { silent = false, fitBou
 }
 
 searchBtn.addEventListener('click', async () => {
-  const originQuery = document.getElementById('originInput').value.trim();
-  const destQuery = document.getElementById('destInput').value.trim();
+  const originInput = document.getElementById('originInput');
+  const destInput = document.getElementById('destInput');
+  const originQuery = originInput.value.trim();
+  const destQuery = destInput.value.trim();
 
   if (!originQuery || !destQuery) {
     statusEl.textContent = '출발지와 도착지를 모두 입력하세요.';
+    return;
+  }
+
+  // 출발지/도착지는 반드시 검색 목록(드롭다운)에서 직접 선택해야만 진행됨.
+  // (자동으로 후보를 추측해서 고르게 하면, 이름이 비슷한 다른 장소가 잡히는 경우가 있어
+  //  아예 "목록에서 직접 고르기"를 강제해서 원천적으로 방지함)
+  if (!selectedLocations.origin) {
+    statusEl.textContent = '⚠️ 출발지를 아래 목록에서 정확히 선택해주세요.';
+    originInput.focus();
+    originInput.dispatchEvent(new Event('input'));
+    return;
+  }
+  if (!selectedLocations.destination) {
+    statusEl.textContent = '⚠️ 도착지를 아래 목록에서 정확히 선택해주세요.';
+    destInput.focus();
+    destInput.dispatchEvent(new Event('input'));
     return;
   }
 
@@ -332,10 +390,9 @@ searchBtn.addEventListener('click', async () => {
   resultsEl.innerHTML = '';
 
   try {
-    const [origin, destination] = await Promise.all([
-      selectedLocations.origin || geocodeAddress(originQuery),
-      selectedLocations.destination || geocodeAddress(destQuery),
-    ]);
+    const origin = selectedLocations.origin;
+    const destination = selectedLocations.destination;
+    console.log('[선택된 위치] 출발지:', origin, ' / 도착지:', destination);
     currentOrigin = origin;
     const result = await fetchAndRenderRoute(origin, destination, { silent: false, fitBounds: true });
     if (result && isMobile()) setSidebarCollapsed(true); // 모바일에서는 경로 찾으면 자동으로 접어서 지도를 크게 보여줌
